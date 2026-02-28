@@ -14,3 +14,10 @@ metrics.txt
 mitmproxy
 mitmdump
 mitmweb
+# Logs
+logs/
+
+# Virtual environment
+venv/
+# Backup files
+*.backup
