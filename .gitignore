@@ -21,3 +21,4 @@ logs/
 venv/
 # Backup files
 *.backup
+*.md
