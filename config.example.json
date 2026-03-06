@@ -1,0 +1,10 @@
+{
+  "_comment": "Discordless configuration — copy to config.json and fill in your values",
+  "proxy_port": 8080,
+  "intercept_channels": ["CHANNEL_ID_TO_MONITOR"],
+  "webhook_channel_id": "DESTINATION_CHANNEL_ID",
+  "webhook_url": "https://discord.com/api/webhooks/WEBHOOK_ID/WEBHOOK_TOKEN",
+  "webhook_username": "Interceptor",
+  "rate_limit_delay": 0.5,
+  "traffic_archive_dir": "traffic_archive"
+}

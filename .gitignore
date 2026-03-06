@@ -17,8 +17,13 @@ mitmweb
 # Logs
 logs/
 
+# Config (contains secrets)
+config.json
+.pids
+
 # Virtual environment
 venv/
 # Backup files
 *.backup
 *.md
+.claude

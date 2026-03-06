@@ -1,0 +1,6 @@
+mitmproxy
+requests
+erlpack
+pyzstd
+filetype
+python-dateutil

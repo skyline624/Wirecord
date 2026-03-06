@@ -3,42 +3,30 @@ requires = ["hatchling"]
 build-backend = "hatchling.build"
 
 [project]
-name = "discord-gateway-logger"
-version = "2.0.0"
-description = "Capture et log en temps réel des messages Discord Gateway"
-readme = "README.md"
+name = "discordless"
+version = "3.0.0"
+description = "Discord traffic interceptor and webhook forwarder"
+readme = "readme.md"
 requires-python = ">=3.10"
 license = {text = "MIT"}
-authors = [{name = "alex_skyline"}]
 dependencies = [
+    "mitmproxy",
+    "requests",
     "erlpack",
     "pyzstd",
-    "mitmproxy",
+    "filetype",
+    "python-dateutil",
 ]
 
 [project.optional-dependencies]
 dev = [
     "pytest>=7.0",
     "pytest-cov",
-    "black",
-    "ruff",
-    "mypy",
 ]
-
-[project.scripts]
-discord-logger = "discord_logger.__main__:main"
-
-[tool.black]
-line-length = 100
-
-[tool.ruff]
-line-length = 100
-select = ["E", "F", "I", "W"]
-
-[tool.mypy]
-python_version = "3.10"
-strict = true
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]
-addopts = "--cov=src/discord_logger --cov-report=term-missing"
+addopts = "--cov=discordless --cov-report=term-missing"
+
+[tool.hatch.build.targets.wheel]
+packages = ["discordless", "exporters"]
