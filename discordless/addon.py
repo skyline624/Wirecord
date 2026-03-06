@@ -22,7 +22,7 @@ if _PROJECT_ROOT not in sys.path:
 
     sys.path.insert(0, _PROJECT_ROOT)
 
-from typing import Dict, Optional, Set
+from typing import Dict, Set
 from urllib.parse import urlparse
 
 from mitmproxy import ctx, http  # type: ignore
@@ -106,7 +106,7 @@ class DiscordlessAddon:
         self._seen_responses: Set[tuple] = set()
         self._seen_messages: Set[str] = set()
         self._gateway_count: int = 0
-        self._forwarder: Optional[WebhookForwarder] = None
+        self._forwarders: Dict[str, WebhookForwarder] = {}  # channel_id → forwarder
         self._archive: str = "traffic_archive"
         self._request_index = None
         self._gateway_index = None
@@ -148,17 +148,23 @@ class DiscordlessAddon:
             default=0,
         )
 
-        # Setup webhook forwarder
-        if self._config.forwarding_enabled:
-            self._forwarder = WebhookForwarder(
-                url=self._config.webhook_url,
-                username=self._config.webhook_username,
-                rate_limit_delay=self._config.rate_limit_delay,
+        # Build channel → forwarder mapping from rules
+        self._forwarders = {}
+        for rule in self._config.forwards:
+            if not rule.enabled:
+                continue
+            fwd = WebhookForwarder(
+                url=rule.webhook_url,
+                username=rule.webhook_username,
+                channel_id=rule.webhook_channel_id,
+                rate_limit_delay=rule.rate_limit_delay,
             )
-            n = len(self._config.intercept_channels)
-            _log(f"webhook forwarding enabled — {n} channel(s) monitored")
+            for ch in rule.channels:
+                self._forwarders[str(ch)] = fwd
+        if self._forwarders:
+            _log(f"webhook forwarding enabled — {len(self._forwarders)} channel(s) monitored")
         else:
-            _log("webhook forwarding disabled (set webhook_url + intercept_channels in config.json)")
+            _log("webhook forwarding disabled (configure 'forwards' in config.json)")
 
         _log(f"archiving to {os.path.abspath(self._archive)}/")
         _log(f"next gateway ID: {self._gateway_count}")
@@ -171,9 +177,11 @@ class DiscordlessAddon:
             self._gateway_index.close()
         for gk in self._gatekeepers.values():
             gk.close()
-        if self._forwarder:
-            s = self._forwarder.stats
-            _log(f"shutdown — forwarded {s['sent']} message(s), {s['errors']} error(s)")
+        unique_fwds = set(self._forwarders.values())
+        if unique_fwds:
+            sent = sum(f.stats["sent"] for f in unique_fwds)
+            errors = sum(f.stats["errors"] for f in unique_fwds)
+            _log(f"shutdown — forwarded {sent} message(s), {errors} error(s)")
 
     # ------------------------------------------------------------------
     # HTTP responses (REST API)
@@ -272,11 +280,9 @@ class DiscordlessAddon:
 
     def _maybe_forward(self, d: dict) -> None:
         """Forward a MESSAGE_CREATE payload if it matches a configured channel."""
-        if not self._forwarder:
-            return
-
         channel_id = str(d.get("channel_id", ""))
-        if channel_id not in self._config.intercept_channels:
+        forwarder = self._forwarders.get(channel_id)
+        if not forwarder:
             return
 
         author_data = d.get("author", {})
@@ -289,7 +295,6 @@ class DiscordlessAddon:
         timestamp = str(d.get("timestamp", ""))
 
         if not content:
-            _log(f"DBG skip empty content channel={channel_id}")
             return  # Skip embed-only / empty messages
 
         msg = DiscordMessage(
@@ -303,7 +308,7 @@ class DiscordlessAddon:
             return
         self._seen_messages.add(msg.dedup_key)
 
-        self._forwarder.forward(msg)
+        forwarder.forward(msg)
 
 
 addons = [DiscordlessAddon()]

@@ -21,10 +21,14 @@ class WebhookForwarder:
     def __init__(
         self,
         url: str,
-        username: str = "Discordless",
+        username: str = "Interceptor",
+        channel_id: str = "",
         rate_limit_delay: float = 0.5,
     ) -> None:
-        self.url = url
+        # For forum/thread channels, thread_id is required.
+        # For regular text channels, leave channel_id empty — the webhook URL
+        # already targets the correct channel.
+        self.url = f"{url}?thread_id={channel_id}" if channel_id else url
         self.username = username
         self.rate_limit_delay = rate_limit_delay
         self._last_sent: float = 0.0

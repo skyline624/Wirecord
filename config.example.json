@@ -1,10 +1,23 @@
 {
   "_comment": "Discordless configuration — copy to config.json and fill in your values",
   "proxy_port": 8080,
-  "intercept_channels": ["CHANNEL_ID_TO_MONITOR"],
-  "webhook_channel_id": "DESTINATION_CHANNEL_ID",
-  "webhook_url": "https://discord.com/api/webhooks/WEBHOOK_ID/WEBHOOK_TOKEN",
-  "webhook_username": "Interceptor",
-  "rate_limit_delay": 0.5,
-  "traffic_archive_dir": "traffic_archive"
+  "traffic_archive_dir": "traffic_archive",
+  "forwards": [
+    {
+      "_comment": "Rule 1 : deux canaux source → un webhook (canal de destination optionnel)",
+      "channels": ["SOURCE_CHANNEL_ID_1", "SOURCE_CHANNEL_ID_2"],
+      "webhook_url": "https://discord.com/api/webhooks/WEBHOOK_ID/WEBHOOK_TOKEN",
+      "webhook_channel_id": "DESTINATION_CHANNEL_ID",
+      "webhook_username": "Interceptor",
+      "rate_limit_delay": 0.5
+    },
+    {
+      "_comment": "Rule 2 : sans canal de destination explicite (webhook déjà lié à un canal)",
+      "channels": ["SOURCE_CHANNEL_ID_3"],
+      "webhook_url": "https://discord.com/api/webhooks/OTHER_WEBHOOK_ID/OTHER_TOKEN",
+      "webhook_channel_id": "DESTINATION_CHANNEL_ID",
+      "webhook_username": "Monitor",
+      "rate_limit_delay": 0.5
+    }
+  ]
 }
