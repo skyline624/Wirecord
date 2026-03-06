@@ -1,11 +1,19 @@
 """Webhook forwarder — sends captured Discord messages to a Discord webhook."""
+import hashlib
 import time
 
 import requests  # type: ignore
 
 from discordless.models import DiscordMessage
 
-_EMBED_COLOR = 5793266  # #587B32 muted green
+
+def _author_color(author: str) -> int:
+    """Deterministic color per author — same name always gives the same color."""
+    h = int(hashlib.md5(author.encode()).hexdigest()[:6], 16)
+    # Ensure minimum brightness so the color is visible on dark backgrounds
+    r, g, b = (h >> 16) & 0xFF, (h >> 8) & 0xFF, h & 0xFF
+    r, g, b = max(r, 80), max(g, 80), max(b, 80)
+    return (r << 16) | (g << 8) | b
 
 
 class WebhookForwarder:
@@ -49,20 +57,15 @@ class WebhookForwarder:
         if elapsed < self.rate_limit_delay:
             time.sleep(self.rate_limit_delay - elapsed)
 
+        channel_label = f"#{msg.channel_name}" if msg.channel_name else f"#{msg.channel_id}"
         payload = {
-            "username": self.username,
-            "embeds": [
-                {
-                    "description": msg.content[:2000],
-                    "color": _EMBED_COLOR,
-                    "fields": [
-                        {"name": "Author", "value": f"@{msg.author}", "inline": True},
-                        {"name": "Channel", "value": msg.channel_id, "inline": True},
-                    ],
-                    "timestamp": msg.timestamp,
-                }
-            ],
+            "username": f"@{msg.author} · {channel_label}",
+            "content": msg.content[:2000],
         }
+        if msg.author_id and msg.author_avatar:
+            payload["avatar_url"] = (
+                f"https://cdn.discordapp.com/avatars/{msg.author_id}/{msg.author_avatar}.png?size=128"
+            )
 
         try:
             resp = requests.post(self.url, json=payload, timeout=10)

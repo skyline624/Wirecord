@@ -107,6 +107,7 @@ class DiscordlessAddon:
         self._seen_messages: Set[str] = set()
         self._gateway_count: int = 0
         self._forwarders: Dict[str, WebhookForwarder] = {}  # channel_id → forwarder
+        self._channel_info: Dict[str, tuple] = {}  # channel_id → (channel_name, guild_name)
         self._archive: str = "traffic_archive"
         self._request_index = None
         self._gateway_index = None
@@ -261,7 +262,9 @@ class DiscordlessAddon:
             return
         t = payload.get("t")
         _log(f"DBG decoded t={t!r}")
-        if t == "MESSAGE_CREATE":
+        if t == "READY":
+            self._index_channels(payload.get("d", {}))
+        elif t == "MESSAGE_CREATE":
             _log(f"MESSAGE_CREATE channel={payload.get('d', {}).get('channel_id')}")
             self._maybe_forward(payload.get("d", {}))
 
@@ -278,6 +281,20 @@ class DiscordlessAddon:
     # Forwarding
     # ------------------------------------------------------------------
 
+    def _index_channels(self, d: dict) -> None:
+        """Build channel_id → (channel_name, guild_name) from a READY payload."""
+        for guild in d.get("guilds", []):
+            if not isinstance(guild, dict):
+                continue
+            guild_name = str(guild.get("name", ""))
+            for ch in guild.get("channels", []):
+                if not isinstance(ch, dict):
+                    continue
+                cid = str(ch.get("id", ""))
+                cname = str(ch.get("name", ""))
+                if cid:
+                    self._channel_info[cid] = (cname, guild_name)
+
     def _maybe_forward(self, d: dict) -> None:
         """Forward a MESSAGE_CREATE payload if it matches a configured channel."""
         channel_id = str(d.get("channel_id", ""))
@@ -286,22 +303,28 @@ class DiscordlessAddon:
             return
 
         author_data = d.get("author", {})
-        author = (
-            author_data.get("username", "unknown")
-            if isinstance(author_data, dict)
-            else "unknown"
-        )
+        if isinstance(author_data, dict):
+            author = author_data.get("username", "unknown")
+            author_id = str(author_data.get("id", ""))
+            author_avatar = str(author_data.get("avatar", "") or "")
+        else:
+            author, author_id, author_avatar = "unknown", "", ""
         content = str(d.get("content", "")).strip()
         timestamp = str(d.get("timestamp", ""))
 
         if not content:
             return  # Skip embed-only / empty messages
 
+        channel_name, guild_name = self._channel_info.get(channel_id, ("", ""))
         msg = DiscordMessage(
             channel_id=channel_id,
             author=author,
             content=content,
             timestamp=timestamp,
+            channel_name=channel_name,
+            guild_name=guild_name,
+            author_id=author_id,
+            author_avatar=author_avatar,
         )
 
         if msg.dedup_key in self._seen_messages:

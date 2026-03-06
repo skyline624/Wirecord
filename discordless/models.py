@@ -19,6 +19,10 @@ class DiscordMessage:
     author: str
     content: str
     timestamp: str
+    channel_name: str = ""
+    guild_name: str = ""
+    author_id: str = ""
+    author_avatar: str = ""
 
     @property
     def dedup_key(self) -> str:
