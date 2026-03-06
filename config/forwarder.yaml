@@ -1,0 +1,19 @@
+# Configuration du forwarder Discord Webhook
+# Copiez ce fichier et remplissez vos valeurs
+
+# URL du webhook Discord cible
+# Paramètres du canal > Intégrations > Webhooks > Nouveau webhook
+webhook_url: ""
+
+# Canaux à surveiller et forwarder (IDs Discord)
+source_channels:
+  - "1473018573571231856"
+
+# Format: "embed" ou "simple"
+message_format: "embed"
+
+# Délai entre requêtes (secondes)
+rate_limit_delay: 0.5
+
+# Activer/désactiver
+enabled: false

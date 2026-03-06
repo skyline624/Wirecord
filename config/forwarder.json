@@ -1,0 +1,10 @@
+{
+  "webhook_url": "",
+  "source_channels": [
+    "1473018573571231856"
+  ],
+  "message_format": "embed",
+  "rate_limit_delay": 0.5,
+  "enabled": false,
+  "_comment": "Remplacez webhook_url par votre URL et mettez enabled: true"
+}
