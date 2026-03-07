@@ -1,4 +1,4 @@
-"""Configuration loading for Discordless.
+"""Configuration loading for Wirecord.
 
 The config file is a JSON file (default: config.json) at the project root.
 Keys starting with '_' are treated as comments and ignored.
@@ -41,7 +41,7 @@ class ForwardRule:
 
 @dataclass
 class Config:
-    """Discordless runtime configuration.
+    """Wirecord runtime configuration.
 
     Attributes:
         proxy_port: Port for the mitmproxy proxy server.

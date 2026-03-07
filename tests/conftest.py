@@ -1,4 +1,4 @@
-"""Shared pytest fixtures for Discordless tests."""
+"""Shared pytest fixtures for Wirecord tests."""
 import json
 import sys
 from pathlib import Path

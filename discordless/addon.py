@@ -1,4 +1,4 @@
-"""Discordless mitmproxy addon.
+"""Wirecord mitmproxy addon.
 
 Intercepts Discord traffic (REST API + Gateway WebSocket), archives it to
 ``traffic_archive/`` in the same binary format as the original
@@ -76,7 +76,7 @@ def _safe_filename(s: str) -> str:
 
 
 def _log(msg: str) -> None:
-    ctx.log.info(f"☎️  Discordless: {msg}")
+    ctx.log.info(f"☎️  Wirecord: {msg}")
 
 
 class _Gatekeeper:
@@ -96,7 +96,7 @@ class _Gatekeeper:
         self._timeline.close()
 
 
-class DiscordlessAddon:
+class WirecordAddon:
     """mitmproxy addon: archive Discord traffic and forward to webhook."""
 
     def __init__(self) -> None:
@@ -204,7 +204,7 @@ class DiscordlessAddon:
 
         response_hash = str(hash(flow.response.content))
         if (url, response_hash) in self._seen_responses:
-            ctx.log.debug(f"☎️  Discordless: skipping duplicate {url}")
+            ctx.log.debug(f"☎️  Wirecord: skipping duplicate {url}")
             return
 
         filename = _safe_filename(
@@ -312,6 +312,15 @@ class DiscordlessAddon:
         content = str(d.get("content", "")).strip()
         timestamp = str(d.get("timestamp", ""))
 
+        # Append attachment URLs to content so files/images are forwarded
+        attachments = d.get("attachments", [])
+        if isinstance(attachments, list):
+            for att in attachments:
+                if isinstance(att, dict):
+                    url = att.get("url", "")
+                    if url:
+                        content = f"{content}\n{url}" if content else url
+
         if not content:
             return  # Skip embed-only / empty messages
 
@@ -334,4 +343,4 @@ class DiscordlessAddon:
         forwarder.forward(msg)
 
 
-addons = [DiscordlessAddon()]
+addons = [WirecordAddon()]

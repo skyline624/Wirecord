@@ -1,5 +1,5 @@
 {
-  "_comment": "Discordless configuration — copy to config.json and fill in your values",
+  "_comment": "Wirecord configuration — copy to config.json and fill in your values",
   "proxy_port": 8080,
   "traffic_archive_dir": "traffic_archive",
   "forwards": [

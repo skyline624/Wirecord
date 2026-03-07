@@ -75,10 +75,10 @@ class WebhookForwarder:
                 return True
             self.stats["errors"] += 1
             from mitmproxy import ctx  # type: ignore
-            ctx.log.warn(f"☎️  Discordless: webhook HTTP {resp.status_code}: {resp.text[:200]}")
+            ctx.log.warn(f"☎️  Wirecord: webhook HTTP {resp.status_code}: {resp.text[:200]}")
             return False
         except requests.RequestException as e:
             self.stats["errors"] += 1
             from mitmproxy import ctx  # type: ignore
-            ctx.log.warn(f"☎️  Discordless: webhook request failed: {e}")
+            ctx.log.warn(f"☎️  Wirecord: webhook request failed: {e}")
             return False

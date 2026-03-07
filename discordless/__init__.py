@@ -1,1 +1,1 @@
-"""Discordless — Discord traffic interceptor and webhook forwarder."""
+"""Wirecord — Discord traffic interceptor and webhook forwarder."""

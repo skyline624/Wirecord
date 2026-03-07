@@ -1,246 +1,176 @@
-# Discordless
+# Wirecord
 
-Automatically save local archives of Discord conversations and render them as HTML or [DiscordChatExporter-frontend](https://github.com/slatinsky/DiscordChatExporter-frontend) compatible JSON.
+Intercept and archive Discord traffic through a [mitmproxy](https://mitmproxy.org/) addon, with optional real-time message forwarding to Discord webhooks.
 
-# How it works
+## What it does
 
-Discord uses [an HTTPS REST API](https://discord.com/developers/docs/reference) and [Websocket API](https://discord.com/developers/docs/topics/gateway) to transfer data. Discordless's [mitmproxy](https://docs.mitmproxy.org/stable/) addon, Wumpus In The Middle, intercepts that traffic and saves it locally as it is fetched. Discordless's exporter scripts can then render that saved data as HTML or [DiscordChatExporter-frontend](https://github.com/slatinsky/DiscordChatExporter-frontend)-compatible JSON for easy viewing.
+Wirecord sits between your Discord client and Discord's servers as a transparent proxy. It:
 
-Once you connect your Discord client to mitmproxy, Wumpus In The Middle automatically saves any data that your client fetches. Therefore, all messages, attachments, icons, etc. that you view will be saved. If you want to archive an entire channel at once, you will have to scroll through the whole thing, and maybe click on image attachments to load full-res versions.
+- **Archives all traffic** — REST API responses and Gateway WebSocket data are saved in raw format to `traffic_archive/`.
+- **Forwards messages** — Messages from configured channels are relayed to Discord webhooks in real time, with the original author's username, avatar, and channel name.
+- **Exports archives** — Saved traffic can be exported to DiscordChatExporter-compatible JSON or HTML.
 
-# Motivation
-Discord has a history of arbitrary, unexpected, unappealable bans, which make you lose access to all your messages. If you want to keep records of your heartfelt conversations, you should probably save your own copies in case you lose access to your account or Discord shuts down someday. There are also a lot of communities that treat Discord as a documentation hub that ought to be archived.
+## Quick start
 
-There already exist tools to archive Discord channels, the most popular one being [DiscordChatExporter](https://github.com/Tyrrrz/DiscordChatExporter), but they violate Discord's frustratingly strict Terms of Service. Exporting DMs with these tools requires "self-botting", which is a bannable offense - though it anecdotally seems to be rarely enforced against exporter tools. Nobody knows how Discord's auto-moderation and botting detection algorithms work, so I'd rather not risk it.
+### Requirements
 
-Discordless does not create any API requests or modify client behavior at all, so I don't think it violates Discord's Terms of Service, and it should be harder for Discord to detect. It also runs in the background, so you don't have to remember to backup regularly. It also works for mobile devices (as long as they are connected to Discordless's proxy server), which is nice for me since I primarily use Discord on my phone.
+- Python 3.10+
+- [mitmproxy](https://mitmproxy.org/)
 
-The archives are also "archive-grade" if you care about that; Discordless stores the raw API responses.
+### Install
 
-# Install and setup - Debian-based Linux
-
-You'll need to install Python, mitmproxy, and [Discord's erlpack library](https://github.com/discord/erlpack).
-
-Here are example commands you can use on Ubuntu. Assumes you use Python 3.9, but any 3.x version should work.
-
-- Install Python: `sudo apt install python3.9 python3.9-dev python3.9-idle`
-- Update pip: `python3.9 -m pip install --upgrade pip`
-- Install mitmproxy: download the binaries from [mitmproxy.org](https://mitmproxy.org/)
-- [Install mitmproxy's certificate](https://docs.mitmproxy.org/stable/concepts-certificates/#quick-setup) on every device with a Discord client that you want to archive with. (Sometimes you also have to install it on the browser level.)
-- Install pyzstd, filetype and erlpack: `python3.9 -m pip install pyzstd filetype erlpack`
-
-# Install and setup - Mac
-Mostly the same as the Debian-based Linux setup.
-
-- Install Python 3.9+
-- Install erlpack: `pip install pyzstd filetype erlpack python-dateutil`
-- [Install mitmproxy](https://docs.mitmproxy.org/stable/overview-installation/#macos): `brew install mitmproxy`
-- Run mitmproxy at least once to generate its certificate: `mitmproxy`
-- [Install mitmproxy's certificate](https://docs.mitmproxy.org/stable/concepts-certificates/#quick-setup): `sudo security add-trusted-cert -d -p ssl -p basic -k /Library/Keychains/System.keychain ~/.mitmproxy/mitmproxy-ca-cert.pem`
-
-# Install and setup - Windows
-
-Make sure Python 3.9+ is installed. There is a problem with installing `erlpack` dependency on Windows, so Python 3.11+ is not supported. To check if Python is installed, open command prompt (Windows key + R, type `cmd` and press Enter) and run command:
-```
-py --version
-```
-
-If Python is not installed, [download and install version 3.9.X or 3.10.X from official site](https://www.python.org/downloads/). During installation, don't forget to check "Add Python 3.X to PATH".
-
-Clone this project (Open folder where you want to clone this project in file explorer, press Alt + D, type `cmd` and press Enter)
-```
+```bash
 git clone https://github.com/Roachbones/discordless
 cd discordless
+python3 -m venv venv
+venv/bin/pip install -r requirements.txt
 ```
 
-Update pip and install `pyzstd`, `erlpack`, `filetype` and `python-dateutil` dependencies:
-```
-py -m pip install --upgrade pip
-py -m pip install python-dateutil filetype pyzstd erlpack
-```
+Install [mitmproxy's CA certificate](https://docs.mitmproxy.org/stable/concepts-certificates/#quick-setup) on every device you want to archive.
 
-Install mitmproxy from [official site](https://mitmproxy.org/). Mitmproxy installer for windows should automatically add `mitmproxy`, `mitmdump` and `mitmweb` to path. Close all opened command prompts to update PATH variable.
+### Configure
 
-Open elevated command prompt (Windows key + R, type `cmd` and press Ctrl + Shift + Enter)
-
-Generate certificates by running mitmproxy the first time:
-```
-mitmproxy.exe
+```bash
+cp config.example.json config.json
 ```
 
-Install mitmproxy certificate:
-```
-cd %UserProfile%\.mitmproxy\
-certutil -addstore root mitmproxy-ca-cert.cer
+Edit `config.json` with your settings:
+
+```json
+{
+  "proxy_port": 8080,
+  "traffic_archive_dir": "traffic_archive",
+  "forwards": [
+    {
+      "channels": ["SOURCE_CHANNEL_ID"],
+      "webhook_url": "https://discord.com/api/webhooks/ID/TOKEN",
+      "webhook_channel_id": "",
+      "webhook_username": "Interceptor",
+      "rate_limit_delay": 0.5
+    }
+  ]
+}
 ```
 
-# Install and setup - Docker
+| Field | Description |
+|---|---|
+| `channels` | Source channel IDs to intercept |
+| `webhook_url` | Discord webhook URL for the destination |
+| `webhook_channel_id` | Thread/forum channel ID (leave empty for regular text channels) |
+| `webhook_username` | Fallback display name (overridden by original author name) |
+| `rate_limit_delay` | Minimum seconds between webhook requests |
 
-You'll need to [install Docker and Docker Compose](https://docs.docker.com/engine/install). Clone this repository, then run:
+You can define multiple forwarding rules to relay different channels to different webhooks.
+
+### Run
+
+```bash
+scripts/start.sh    # Start proxy + Discord
+scripts/stop.sh     # Stop both
+```
+
+Or run the proxy manually:
+
+```bash
+mitmdump -s discordless/addon.py --listen-port=8080 \
+  --allow-hosts '^(((.+\.)?discord\.com)|((.+\.)?discordapp\.com)|((.+\.)?discord\.net)|((.+\.)?discordapp\.net)|((.+\.)?discord\.gg))(?::\d+)?$'
+```
+
+Then start Discord with the proxy:
+
+```bash
+discord --proxy-server=localhost:8080
+```
+
+### Docker
 
 ```bash
 docker compose up --build
 ```
 
-Your mitmproxy certificate will be stored in `~/.mitmproxy`. [Install mitmproxy's certificate](https://docs.mitmproxy.org/stable/concepts-certificates/#quick-setup) on every device with a Discord client that you want to archive with. (Sometimes you also have to install it on the browser level.)
+## Forwarded messages
 
-# Usage
+When forwarding is enabled, messages from monitored channels appear in the destination with:
 
-## Step one: data collection - Debian based Linux
+- The original author's **username** and **avatar**
+- The source **channel name** next to the author
+- **Attachments** (images, files) as clickable URLs
+- **Custom emojis** are forwarded as-is in the text (they will only render if the webhook's server has access to the same emojis)
 
-Start the proxy server: `mitmdump -s wumpus_in_the_middle.py --listen-port=8080 --allow-hosts '^(((.+\.)?discord\.com)|((.+\.)?discordapp\.com)|((.+\.)?discord\.net)|((.+\.)?discordapp\.net)|((.+\.)?discord\.gg))(?::\d+)?$'`
+## Exporting archives
 
-(For Docker users, as long as your server is up, you do not need to run this.)
+Export saved traffic from `traffic_archive/` to readable formats:
 
-Start Discord, connected to the proxy server. If you're on a PC, you can do `discord --proxy-server=localhost:8080` to start an instance of Discord connected to the proxy without having to configure your whole computer to use the proxy. You can replace `localhost:8080` with some other address if the proxy server is running on a different device. If you're on mobile, or otherwise don't want to use that commandline argument, then configure the whole device to use the proxy server in the network settings. Due to the `--allow-hosts` argument we pass to mitmproxy, it should not interfere much with non-Discord traffic.
-
-You can tell that data collection is working if `traffic_archive/requests/` starts filling up.
-
-### Always launching with proxy server setting
-To make this the default way to launch Discord, assuming your Discord is installed using Flatpak, first create a copy of Discord's .desktop file: `cp /var/lib/flatpak/exports/share/applications/com.discordapp.Discord.desktop ~/.local/share/applications/com.discordapp.Discord.desktop`
-
-Then edit this new file, locate the `Exec` line, and add the `--proxy-server` parameter. This could look like this: 
-`Exec=/usr/bin/flatpak run --branch=stable --arch=x86_64 --command=com.discordapp.Discord --file-forwarding com.
-discordapp.Discord --proxy-server=localhost:8080 @@u %U @@`
-
-## Step one: data collection - Windows
-
-Start the proxy server in the first command prompt (Windows key + R, type `cmd` and press Enter):
-```
-mitmdump -s wumpus_in_the_middle.py --listen-port=8080 --allow-hosts "^(((.+\.)?discord\.com)|((.+\.)?discordapp\.com)|((.+\.)?discord\.net)|((.+\.)?discordapp\.net)|((.+\.)?discord\.gg))(?::\d+)?$"
+```bash
+python3 exporter.py dcejson-exporter    # DiscordChatExporter-compatible JSON
+python3 exporter.py html-exporter       # HTML
+python3 exporter.py htmeml-exporter     # Memory-efficient paginated HTML
+python3 exporter.py <name> -h           # See all options
 ```
 
-Discord executable is not in PATH; we need to find it manually. Open second command prompt (Windows key + R, type `cmd` and press Enter)
+JSON exports are compatible with [DiscordChatExporter-frontend](https://github.com/slatinsky/DiscordChatExporter-frontend) and [chat-analytics](https://github.com/mlomb/chat-analytics).
+
+## Architecture
+
 ```
-cd %LocalAppData%\Discord\app-<version>\
-cd app-
-[tab]
-[enter]
-discord --proxy-server=localhost:8080
+Discord client
+    |  (proxy)
+mitmproxy + discordless/addon.py
+    |-- REST responses  --> traffic_archive/requests/
+    |-- Gateway chunks  --> traffic_archive/gateways/
+    '-- MESSAGE_CREATE  --> WebhookForwarder --> Discord webhook
 ```
 
-## Step two: export archived traffic to DCE-style JSON (or HTML)
+### Core package: `discordless/`
 
-If Wumpus In The Middle is still running, restart it (ctrl+c in the terminal) to ensure it flushes its file buffers. Then run `exporter.py` to turn the data in `traffic_archive/` into an export.
+| File | Role |
+|---|---|
+| `addon.py` | mitmproxy addon — intercepts, archives, and forwards |
+| `config.py` | Loads `config.json` into typed dataclasses |
+| `models.py` | `DiscordMessage` — immutable message representation |
+| `decoder.py` | `GatewayDecoder` — stateful zlib/zstd + JSON/ETF decoder per WebSocket connection |
+| `webhook.py` | `WebhookForwarder` — POST to Discord webhooks with rate limiting |
 
-### DCE-style JSON
+### Export pipeline: `exporters/`
 
-`python3 exporter.py dcejson-exporter` reads the data in `traffic_archive` and outputs a [DiscordChatExporter](https://github.com/Tyrrrz/DiscordChatExporter)-style JSON export to `dcejson_exports/export_{current Unix time}/`. You can feed that export into [DiscordChatExporter-frontend](https://github.com/slatinsky/DiscordChatExporter-frontend) to neatly display it in a Discord-style interface.
+| Exporter | Output |
+|---|---|
+| `dcejson/` | DiscordChatExporter-compatible JSON |
+| `html/` | Classical HTML chatlog |
+| `htmeml/` | Memory-efficient paginated HTML |
 
-(For Docker users, you can run this by running `docker exec discordless-discordless-1 python exporter.py dcejson-exporter && docker restart discordless-dcebox-frontend-1`. You can do this in any directory, though the files will be stored in `$PROJECT_ROOT/dcejson_exports`.)
+### Key technical details
 
-Run `python3 exporter.py dcejson-exporter -h` to see additional export options.
+- Gateway data is archived as **raw compressed binary** — exporters can replay and decode it later
+- `GatewayDecoder` maintains a **stateful decompressor** per connection (Discord's `zstd-stream` is a continuous stream, not independent frames)
+- Message deduplication uses an in-memory set keyed by MD5 of timestamp + author + content
+- The proxy only intercepts Discord domains — other traffic passes through untouched
 
-### HTML
+## Testing
 
-There are two HTML backends: The classical HTML exporter and HTMemL.
+```bash
+PYTHONPATH=. venv/bin/python -m pytest                          # All tests
+PYTHONPATH=. venv/bin/python -m pytest tests/unit/test_config.py  # One file
+PYTHONPATH=. venv/bin/python -m pytest -k "test_name"             # By name
+```
 
-##### Classical HTML
-HTML exporting is half-baked at this point; embeds do not work, and there's no pagination. It can show some extra data, though, like message edit history.
+### Testing with recorded traffic
 
-You can run `python3 exporter.py html-exporter` similar to the DCE-JSON option.
+```bash
+# Record
+mitmproxy -w discord_dump.flow --set stream_large_bodies=100k \
+  --allow-hosts '<discord regex>'
 
-Run `python3 exporter.py html-exporter -h` to see additional export options.
+# Replay
+mitmdump -s discordless/addon.py --rfile discord_dump.flow
+```
 
-##### HTMemL
-HTMemL is an optimized HTML exporter that does not use nearly as much memory as the classical HTML exporter. It has been built to export a discord server as a public message archive (a bit like a forum or mailing list archive). 
-It supports pagination, attachments, and even some discord markdown.
-However, it does come with differences compared to the classical exporter: It doesn't show the message edit history, and it doesn't try to imitate the discord UI.
+## Limitations
 
-You can invoke it like this: `python3 exporter.py htmeml-exporter`
+- **iOS WebSocket traffic** ignores HTTP proxy settings, so Gateway data from iOS devices is not captured. REST traffic still works.
+- **Custom emojis** from other servers won't render in forwarded messages (Discord limitation).
+- **Multiple Discord accounts** through the same proxy instance are not supported — all traffic is treated as one account.
 
-Run `python3 exporter.py htmeml-exporter -h` to see additional export options.
+## License
 
-## Step three: view the export
-
-### DiscordChatExporter-style JSON
-
-Use [DiscordChatExporter-frontend](https://github.com/slatinsky/DiscordChatExporter-frontend) to view JSON exports. JSON exports should also be compatible with other DiscordChatExporter-based tools, such as [chat-analytics](https://github.com/mlomb/chat-analytics).
-
-### HTML
-
-Open one of the folders in the export (each folder corresponding to a channel, but good luck distinguishing them) and open `chatlog.html` in your favorite web browser. Unlike the JSON export, each channel folder contains its own assets, so any channel folder can be individually moved outside the export folder without breaking image links.
-
-## More technical details
-
-Here's a breakdown of the Wumpus In The Middle invocation command (`mitmdump -s wumpus_in_the_middle.py --listen-port=8080 --allow-hosts '^(((.+\.)?discord\.com)|((.+\.)?discordapp\.com)|((.+\.)?discord\.net)|((.+\.)?discordapp\.net)|((.+\.)?discord\.gg))(?::\d+)?$'`):
-- `--listen-port=8080` tells mitmdump to run the proxy server on port 8080. Feel free to change this.
-- `--allow-hosts '^(((.+\.)?discord\.com)|((.+\.)?discordapp\.com)|((.+\.)?discord\.net)|((.+\.)?discordapp\.net))(?::\d+)?$'` tells mitmproxy to not intercept any https traffic besides traffic to Discord. This is a little redundant since Wumpus In The Middle is also programmed to focus on Discord traffic, but this improves performance and helps to avoid interfering with any sites that have strict certificate policies.
-- In theory, you can also add ` --proxyauth 'username:password'` to the end to require authentication to connect to the proxy. However, I haven't been able to get this to work when connecting to the proxy from my iPhone; I get 407 errors even if I specify proxy authentication in my phone's network settings. **Let me know if you get it to work!**
-
-Although you can connect multiple devices to the same Wumpus In The Middle instance, do not do so with multiple Discord accounts; Discordless currently assumes that all traffic is from one account and does not distinguish between multiple accounts. (I guess you could make a conglomerate archive of all of the servers of multiple accounts if you wanted, though.)
-
-## Directory structure
-
-- Wumpus In The Middle saves Discord traffic to a neighboring directory called `traffic_archive/`. This directory will grow over time. Contents:
-	- `request_index`:
-	Keeps track of metadata for each recorded HTTPS response. Each line is structured like `{timestamp} {method (GET or POST)} {url} {response hash} {filename}`. The filename points to a file in `traffic_archive/requests/` which contains the response contents. 
-	- `requests/`: Stores response contents. Contents tracked in `request_index/`.
-	- `gateway_index`: Tracks metadata for each recorded Gateway (websocket) connection. Each line is structured like `{timestamp} {url} {filename prefix}`. The filename prefix points to a pair of files in `traffic_archive/gateways/`, which end in `_data` and `_timeline`.
-	- `gateways/`: Stores compressed Gateway "message" contents and timing information, in pairs of files ending in `_data` and `_timeline` respectively. Each Gateway lasts a long time (like, until you quit the client), and is tranport compressed via zlib. The `_data` file contains the entire Gateway "response"/"stream" (every "message" concatenated together) while the `_timeline` file keeps track of when each compressed "chunk"/"message" was received. Each line of the `_timeline` file is structured like `{timestamp} {chunk length}`.
-- `exporter.py` calls different exporter backend in `exporters`
-    -  `exporters/html` contains all files related to the html exporter.
-    -  `exporters/dcejson` contains all files related to the dcejson exporter
-    -  `exporters/parse_gateway.py` and `exporters/registry.py` contain utilities for individual exporters
-- `dcejson_exports` and `html_exports` hold the exported dcejson respectively html files from exports
-- All files containing "docker" in some form are related to the docker image
-- `wumpus_in_the_middle.py` is the traffic recorder
-
-# Limitations
-
-## iOS websocket traffic ignores proxy settings
-
-iOS seems to ignore HTTP proxy settings for websockets (pls tell me if you know why this is and how to fix it), so Discordless fails to sniff websocket traffic from iOS devices. However, much of the archived data comes from regular REST endpoints instead, so you can still get decent data coverage without websockets!
-
-In a nutshell: regular REST endpoints are used for you to say stuff to Discord like "Load the messages in this channel!" and "Load this image!". Websockets are for the server to tell you stuff like "Hey, this person sent you a message!". The latter should be mostly redundant if you often switch between different channels (thus reloading the messages via REST).
-
-
-
-# Comparison to DiscordChatExporter
-Discordless requires technical knowledge to set up and its realtime archive-grade backups are overkill for most people. Here's a feature comparison between it and DiscordChatExporter, the most popular Discord archiving tool:
-
-|  | DiscordChatExporter | Discordless |
-|---|---|---|
-| Easy to use? | Yes, more or less! **Thus, it remains superior for most people.** | Not yet! Requires some technical setup. Hoping to make it easier eventually. |
-| Obeys Discord's ToS? | Not if you export DMs (which requires self-botting), though its violations are probably rarely enforced. | Yes |
-| Archives in realtime, automatically? | No, but you could run it in a nightly cron job. | Yes! |
-| Works on mobile? | No | Yes, if you connect your mobile device to a proxy server running Discordless's proxy server (Wumpus In The Middle) |
-| Slows down Discord? | No; it's not running all the time. | Yes. Discord traffic must be processed through Wumpus In The Middle, which adds latency. |
-| Disk space usage | Uses less space. Saves the exports and nothing else. | Uses more space; see above. My usage runs about 70mb per day. |
-| Export to HTML? | Yes | Sorta; some features missing |
-| Export to JSON? | Yes | Yes, following DiscordChatExporter's (undocumented) JSON format for compatibility with **DiscordChatExporter-frontend**. Some features WIP. |
-| "Archival grade"? | No, but this probably doesn't matter for most people. | Yes; records all data received by the Discord API, allowing exporter updates to be backported to old data. Can track stuff like message edits and deletions. See also: [Discard](https://github.com/Sanqui/discard), [Discard2](https://github.com/Sanqui/discard2), and [DiscordLogEverything](https://github.com/LostXOR/DiscordLogEverything). |
-
-
-
-
-# Other notes
-
-## How to get the Discord desktop app to trust your mitmproxy certificate
-For me, the usual mitmproxy workflow of [installing a mitmproxy root certificate on an operating system level](https://docs.mitmproxy.org/stable/concepts-certificates/) worked for everything on my computer *except* the Discord desktop app. Discord in browser worked fine, but not the desktop app. I had to add the certificate in Chrome, for some reason, to make the Discord app trust it. This might be an Ubuntu thing.
-
-## Development tips for Wumpus In The Middle
-
-If you want to work on Wumpus In The Middle (the mitmproxy script), then it can be handy to prepare a .flow file for testing purposes. Mitmproxy's .flow files are used to "replay" web traffic. This way, instead of having to open Discord every time you want to test Wumpus In The Middle, you can just record a sample of Discord traffic to a file ("`discord_dump.flow`") and feed that into Wumpus In The Middle every time you test it.
-
-### Part one: record traffic
-`mitmproxy -w discord_dump.flow --set stream_large_bodies=100k --allow-hosts '^(((.+\.)?discord\.com)|((.+\.)?discordapp\.com)|((.+\.)?discord\.net)|((.+\.)?discordapp\.net)|((.+\.)?discord\.gg))(?::\d+)?$'`
-`-w discord_dump.flow` tells mitmproxy to output all the traffic logs to a file named `discord_dump.flow`. This clobbers any existing file at that path.
-
-Once you start recording, do some stuff on Discord. Scroll through channels, send messages, that sort of thing. You may want to restart your Discord client, and disable cache if you're using in-browser Discord, to make sure you re-fetch assets.
-
-### Part two: parse traffic
-`mitmdump -s wumpus_in_the_middle.py --rfile discord_dump.flow`
-This replays the flow to Wumpus In The Middle. It should archive the traffic in `traffic_archive`. Then you can run one of the exporter scripts as normal.
-
-## To do
-
-Some features of the JSON export are incomplete. Namely:
-- reactions
-- stickers
-- emojos ("Custom Emoji")
-
-However, Wumpus In The Middle still archives this data, so any enhancements to the exporter scripts to include these features will be backwards-compatible with existing traffic archives.
-
-
-![The "programmer art" logo for Discordless, depicting Discord's Clyde mascot as a corded phone with its cord cut.](doc_images/logo.png)
+MIT

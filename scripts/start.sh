@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# Discordless — start script
+# Wirecord — start script
 set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
@@ -9,7 +9,7 @@ PID_FILE="$PROJECT_DIR/.pids"
 cd "$PROJECT_DIR"
 
 if [ -f "$PID_FILE" ]; then
-    echo "⚠️  Discordless appears to already be running (.pids exists)."
+    echo "⚠️  Wirecord appears to already be running (.pids exists)."
     echo "   Run scripts/stop.sh first, or delete .pids manually."
     exit 1
 fi
@@ -30,7 +30,7 @@ print(Config.load().proxy_port)
 
 mkdir -p logs
 
-echo "=== Discordless ==="
+echo "=== Wirecord ==="
 echo "Project : $PROJECT_DIR"
 echo "Config  : config.json"
 echo "Port    : $PROXY_PORT"

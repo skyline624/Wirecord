@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# Discordless — stop script
+# Wirecord — stop script
 set -euo pipefail
 
 PROJECT_DIR="$(cd "$(dirname "$(dirname "${BASH_SOURCE[0]}")")" && pwd)"
@@ -12,7 +12,7 @@ if [ ! -f "$PID_FILE" ]; then
     exit 0
 fi
 
-echo "Stopping Discordless..."
+echo "Stopping Wirecord..."
 while IFS= read -r pid; do
     if [ -n "$pid" ] && kill -0 "$pid" 2>/dev/null; then
         kill "$pid" && echo "  ✅ Stopped PID $pid"

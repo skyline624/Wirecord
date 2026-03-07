@@ -3,7 +3,7 @@ requires = ["hatchling"]
 build-backend = "hatchling.build"
 
 [project]
-name = "discordless"
+name = "wirecord"
 version = "3.0.0"
 description = "Discord traffic interceptor and webhook forwarder"
 readme = "readme.md"
