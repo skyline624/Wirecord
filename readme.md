@@ -1,5 +1,7 @@
 # Wirecord
 
+A fork of [discordless](https://github.com/Roachbones/discordless).
+
 Intercept and archive Discord traffic through a [mitmproxy](https://mitmproxy.org/) addon, with optional real-time message forwarding to Discord webhooks.
 
 ## What it does
@@ -20,8 +22,8 @@ Wirecord sits between your Discord client and Discord's servers as a transparent
 ### Install
 
 ```bash
-git clone https://github.com/Roachbones/discordless
-cd discordless
+git clone <your-repo-url>
+cd Wirecord
 python3 -m venv venv
 venv/bin/pip install -r requirements.txt
 ```
