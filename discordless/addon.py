@@ -22,6 +22,7 @@ if _PROJECT_ROOT not in sys.path:
 
     sys.path.insert(0, _PROJECT_ROOT)
 
+from collections import OrderedDict
 from typing import Dict, Set
 from urllib.parse import urlparse
 
@@ -33,6 +34,8 @@ from discordless.models import DiscordMessage
 from discordless.webhook import WebhookForwarder
 
 # Domains whose traffic is archived (mirrors wumpus_in_the_middle.py)
+_MAX_TRACKED_MESSAGES = 1000
+
 _DISCORD_DOMAINS: Set[str] = {
     "discord.com",
     "discordapp.com",
@@ -107,6 +110,8 @@ class WirecordAddon:
         self._seen_messages: Set[str] = set()
         self._gateway_count: int = 0
         self._forwarders: Dict[str, WebhookForwarder] = {}  # channel_id → forwarder
+        # Maps (id(forwarder), discord_msg_id) → (webhook_msg_id, webhook_channel_id, guild_id)
+        self._forwarded: OrderedDict = OrderedDict()
         self._channel_info: Dict[str, tuple] = {}  # channel_id → (channel_name, guild_name)
         self._archive: str = "traffic_archive"
         self._request_index = None
@@ -263,10 +268,17 @@ class WirecordAddon:
         t = payload.get("t")
         _log(f"DBG decoded t={t!r}")
         if t == "READY":
-            self._index_channels(payload.get("d", {}))
+            self._index_channels_ready(payload.get("d", {}))
+        elif t == "GUILD_CREATE":
+            self._index_channels_guild(payload.get("d", {}))
+        elif t in ("CHANNEL_CREATE", "CHANNEL_UPDATE"):
+            self._index_channel(payload.get("d", {}))
         elif t == "MESSAGE_CREATE":
             _log(f"MESSAGE_CREATE channel={payload.get('d', {}).get('channel_id')}")
             self._maybe_forward(payload.get("d", {}))
+        elif t == "MESSAGE_UPDATE":
+            _log(f"MESSAGE_UPDATE channel={payload.get('d', {}).get('channel_id')}")
+            self._maybe_forward_edit(payload.get("d", {}))
 
     def websocket_end(self, flow: http.HTTPFlow) -> None:
         """Clean up state when a Gateway connection closes."""
@@ -281,8 +293,32 @@ class WirecordAddon:
     # Forwarding
     # ------------------------------------------------------------------
 
-    def _index_channels(self, d: dict) -> None:
-        """Build channel_id → (channel_name, guild_name) from a READY payload."""
+    def _index_channels_guild(self, d: dict) -> None:
+        """Build channel_id → (channel_name, guild_name) from a GUILD_CREATE payload."""
+        guild_name = str(d.get("name", ""))
+        for ch in d.get("channels", []):
+            if not isinstance(ch, dict):
+                continue
+            cid = str(ch.get("id", ""))
+            cname = str(ch.get("name", ""))
+            if cid:
+                self._channel_info[cid] = (cname, guild_name)
+
+    def _index_channel(self, d: dict) -> None:
+        """Update channel_id → (channel_name, guild_name) from a CHANNEL_CREATE/UPDATE payload."""
+        cid = str(d.get("id", ""))
+        cname = str(d.get("name", ""))
+        if not cid or not cname:
+            return
+        _, existing_guild = self._channel_info.get(cid, ("", ""))
+        self._channel_info[cid] = (cname, existing_guild)
+
+    def _index_channels_ready(self, d: dict) -> None:
+        """Build channel_id → (channel_name, guild_name) from a READY payload.
+
+        In practice READY guilds are often unavailable stubs — real data comes
+        via GUILD_CREATE events handled by :meth:`_index_channels_guild`.
+        """
         for guild in d.get("guilds", []):
             if not isinstance(guild, dict):
                 continue
@@ -340,7 +376,58 @@ class WirecordAddon:
             return
         self._seen_messages.add(msg.dedup_key)
 
-        forwarder.forward(msg)
+        discord_msg_id = str(d.get("id", ""))
+        source_guild_id = str(d.get("guild_id") or "")
+        result = forwarder.forward_and_get_id(msg)
+        if result and discord_msg_id:
+            webhook_msg_id, webhook_channel_id, guild_id = result
+            # Prefer guild_id from source message if webhook response has none
+            guild_id = guild_id or source_guild_id
+            key = (id(forwarder), discord_msg_id)
+            if len(self._forwarded) >= _MAX_TRACKED_MESSAGES:
+                self._forwarded.popitem(last=False)  # FIFO eviction
+            self._forwarded[key] = (webhook_msg_id, webhook_channel_id, guild_id)
+            _log(f"forwarded {discord_msg_id} → webhook msg {webhook_msg_id}")
+
+    def _maybe_forward_edit(self, d: dict) -> None:
+        """Send an edit-notification if the edited message was previously forwarded."""
+        channel_id = str(d.get("channel_id", ""))
+        forwarder = self._forwarders.get(channel_id)
+        if not forwarder:
+            return
+
+        discord_msg_id = str(d.get("id", ""))
+        if not discord_msg_id:
+            return
+
+        tracked = self._forwarded.get((id(forwarder), discord_msg_id))
+        if not tracked:
+            return  # Not forwarded in this session
+
+        webhook_msg_id, webhook_channel_id, guild_id = tracked
+
+        author_data = d.get("author", {})
+        if isinstance(author_data, dict):
+            author = author_data.get("username", "unknown")
+            author_id = str(author_data.get("id", ""))
+            author_avatar = str(author_data.get("avatar", "") or "")
+        else:
+            author, author_id, author_avatar = "unknown", "", ""
+
+        new_content = str(d.get("content", "")).strip()
+        if not new_content:
+            return  # Embed-only edit — skip
+
+        forwarder.forward_edit_notification(
+            original_msg_id=webhook_msg_id,
+            webhook_channel_id=webhook_channel_id,
+            guild_id=guild_id,
+            new_content=new_content,
+            author=author,
+            author_id=author_id,
+            author_avatar=author_avatar,
+        )
+        _log(f"edit-notification sent for discord msg {discord_msg_id}")
 
 
 addons = [WirecordAddon()]

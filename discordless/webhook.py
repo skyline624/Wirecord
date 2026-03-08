@@ -82,3 +82,96 @@ class WebhookForwarder:
             from mitmproxy import ctx  # type: ignore
             ctx.log.warn(f"☎️  Wirecord: webhook request failed: {e}")
             return False
+
+    def forward_and_get_id(self, msg: DiscordMessage) -> tuple | None:
+        """Like :meth:`forward` but uses ``?wait=true`` to get the created message ID.
+
+        Returns:
+            ``(webhook_msg_id, channel_id, guild_id)`` on success, ``None`` on failure.
+        """
+        elapsed = time.time() - self._last_sent
+        if elapsed < self.rate_limit_delay:
+            time.sleep(self.rate_limit_delay - elapsed)
+
+        channel_label = f"#{msg.channel_name}" if msg.channel_name else f"#{msg.channel_id}"
+        payload = {
+            "username": f"@{msg.author} · {channel_label}",
+            "content": msg.content[:2000],
+        }
+        if msg.author_id and msg.author_avatar:
+            payload["avatar_url"] = (
+                f"https://cdn.discordapp.com/avatars/{msg.author_id}/{msg.author_avatar}.png?size=128"
+            )
+
+        wait_url = self.url + ("&wait=true" if "?" in self.url else "?wait=true")
+        try:
+            resp = requests.post(wait_url, json=payload, timeout=10)
+            self._last_sent = time.time()
+            if resp.status_code == 200:
+                self.stats["sent"] += 1
+                data = resp.json()
+                return (str(data.get("id") or ""), str(data.get("channel_id") or ""), str(data.get("guild_id") or ""))
+            self.stats["errors"] += 1
+            from mitmproxy import ctx  # type: ignore
+            ctx.log.warn(f"☎️  Wirecord: webhook HTTP {resp.status_code}: {resp.text[:200]}")
+            return None
+        except requests.RequestException as e:
+            self.stats["errors"] += 1
+            from mitmproxy import ctx  # type: ignore
+            ctx.log.warn(f"☎️  Wirecord: webhook request failed: {e}")
+            return None
+
+    def forward_edit_notification(
+        self,
+        original_msg_id: str,
+        webhook_channel_id: str,
+        guild_id: str,
+        new_content: str,
+        author: str,
+        author_id: str = "",
+        author_avatar: str = "",
+    ) -> bool:
+        """Send an edit-notification for a previously forwarded message.
+
+        Args:
+            original_msg_id: ID of the webhook message that was originally forwarded.
+            webhook_channel_id: Channel ID where the webhook message lives.
+            guild_id: Guild ID (used to build the message link).
+            new_content: The updated message content.
+            author: Display name of the author.
+            author_id: Discord user ID (for avatar URL).
+            author_avatar: Avatar hash (for avatar URL).
+
+        Returns:
+            True on HTTP 204 (success), False otherwise.
+        """
+        elapsed = time.time() - self._last_sent
+        if elapsed < self.rate_limit_delay:
+            time.sleep(self.rate_limit_delay - elapsed)
+
+        link = f"https://discord.com/channels/{guild_id}/{webhook_channel_id}/{original_msg_id}"
+        content = f"✏️ **Edited** — [original message]({link})\n{new_content[:1800]}"
+        payload = {
+            "username": f"@{author} (edit)",
+            "content": content,
+        }
+        if author_id and author_avatar:
+            payload["avatar_url"] = (
+                f"https://cdn.discordapp.com/avatars/{author_id}/{author_avatar}.png?size=128"
+            )
+
+        try:
+            resp = requests.post(self.url, json=payload, timeout=10)
+            self._last_sent = time.time()
+            if resp.status_code == 204:
+                self.stats["sent"] += 1
+                return True
+            self.stats["errors"] += 1
+            from mitmproxy import ctx  # type: ignore
+            ctx.log.warn(f"☎️  Wirecord: edit-notification HTTP {resp.status_code}: {resp.text[:200]}")
+            return False
+        except requests.RequestException as e:
+            self.stats["errors"] += 1
+            from mitmproxy import ctx  # type: ignore
+            ctx.log.warn(f"☎️  Wirecord: webhook request failed: {e}")
+            return False
