@@ -1,0 +1,36 @@
+#!/usr/bin/env bash
+# Wirecord headless launcher — runs mitmdump (foreground) and Discord (background)
+# in the Xvfb display managed by xvfb@99.service
+set -euo pipefail
+
+WIRECORD_DIR=/root/discord/wirecord
+PROXY_PORT=9090
+
+cd "$WIRECORD_DIR"
+source venv/bin/activate
+mkdir -p logs
+
+# Kill all child processes when this script exits (systemd stop or crash)
+trap 'kill 0 2>/dev/null || true' EXIT
+
+# Start mitmdump in background, log to file
+venv/bin/mitmdump \
+    -s discordless/addon.py \
+    --listen-host 127.0.0.1 \
+    --listen-port="$PROXY_PORT" \
+    --allow-hosts '^(((.+\.)?discord\.com)|((.+\.)?discordapp\.com)|((.+\.)?discord\.net)|((.+\.)?discordapp\.net)|((.+\.)?discord\.gg))(?::\d+)?$' \
+    >> logs/mitmdump.log 2>&1 &
+MITM_PID=$!
+echo "[wirecord-run] mitmdump started (PID $MITM_PID, port $PROXY_PORT)"
+
+# Wait briefly for mitmdump to bind
+sleep 2
+
+# Start Discord in background within Xvfb display ($DISPLAY=:99 from systemd Environment)
+discord --proxy-server="127.0.0.1:$PROXY_PORT" --no-sandbox \
+    >> logs/discord.log 2>&1 &
+DISCORD_PID=$!
+echo "[wirecord-run] discord started (PID $DISCORD_PID, DISPLAY=$DISPLAY)"
+
+# Block on mitmdump; if it exits, the trap kills Discord and systemd restarts the unit
+wait "$MITM_PID"

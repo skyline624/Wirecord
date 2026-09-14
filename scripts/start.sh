@@ -50,7 +50,7 @@ sleep 2
 DISCORD_PID=""
 for cmd in discord Discord discord-canary; do
     if command -v "$cmd" &>/dev/null; then
-        "$cmd" --proxy-server="localhost:$PROXY_PORT" >> logs/discord.log 2>&1 &
+        "$cmd" --no-sandbox --proxy-server="localhost:$PROXY_PORT" >> logs/discord.log 2>&1 &
         DISCORD_PID=$!
         echo "✅ Discord started   (PID $DISCORD_PID, cmd: $cmd) — logs/discord.log"
         echo "$DISCORD_PID" >> "$PID_FILE"
@@ -60,7 +60,7 @@ done
 
 if [ -z "$DISCORD_PID" ]; then
     echo "⚠️  Discord not found in PATH."
-    echo "   Start it manually with:  discord --proxy-server=localhost:$PROXY_PORT"
+    echo "   Start it manually with:  discord --no-sandbox --proxy-server=localhost:$PROXY_PORT"
 fi
 
 echo ""

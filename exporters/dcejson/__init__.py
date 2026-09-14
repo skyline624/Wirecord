@@ -466,9 +466,10 @@ def dcesjon_exporter_main(options):
                         observe_channel(seen_timestamp, channel_dao, None)
                         #assert "women, online" not in str(channel_dao)
                     for guild_dao in event["guilds"]:
-                        assert guild_dao["data_mode"] == "full", "data mode {}. i don't know what that means sowwy >.<".format(dgo["data_mode"])
+                        if guild_dao.get("data_mode") != "full":
+                            continue
                         observe_guild(seen_timestamp, guild_dao)
-                        for channel_dao in guild_dao["channels"]:
+                        for channel_dao in guild_dao.get("channels", []):
                             observe_channel(seen_timestamp, channel_dao, int(guild_dao["id"]))
                 elif event_name=="GUILD_MEMBER_LIST_UPDATE":
                     # see https://arandomnewaccount.gitlab.io/discord-unofficial-docs/lazy_guilds.html

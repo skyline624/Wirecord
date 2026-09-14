@@ -16,6 +16,36 @@ def _author_color(author: str) -> int:
     return (r << 16) | (g << 8) | b
 
 
+def split_content(text: str, limit: int = 2000) -> list:
+    """Split ``text`` into chunks of at most ``limit`` characters.
+
+    Discord webhooks cap a single message's content at 2000 characters, so a
+    longer source message (e.g. a Nitro author's 4000-char post) must be sent
+    as several consecutive webhook messages instead of being truncated.
+
+    Breaks are preferred on newline boundaries so markdown stays intact; a
+    single line longer than ``limit`` is hard-cut as a last resort.
+
+    Returns:
+        A list of chunks (empty list if ``text`` is empty).
+    """
+    if not text:
+        return []
+    if len(text) <= limit:
+        return [text]
+    chunks: list = []
+    remaining = text
+    while len(remaining) > limit:
+        cut = remaining[:limit].rfind("\n")
+        if cut <= 0:
+            cut = limit  # no newline to break on — hard cut
+        chunks.append(remaining[:cut].rstrip("\n"))
+        remaining = remaining[cut:].lstrip("\n")
+    if remaining:
+        chunks.append(remaining)
+    return chunks
+
+
 class WebhookForwarder:
     """Sends :class:`DiscordMessage` objects to a Discord webhook as rich embeds.
 
@@ -42,84 +72,128 @@ class WebhookForwarder:
         self._last_sent: float = 0.0
         self.stats: dict = {"sent": 0, "errors": 0}
 
+    def _wait_for_rate_limit(self) -> None:
+        """Block until at least :attr:`rate_limit_delay` has passed since the last send."""
+        elapsed = time.time() - self._last_sent
+        if elapsed < self.rate_limit_delay:
+            time.sleep(self.rate_limit_delay - elapsed)
+
+    def _payload(self, content: str, msg: DiscordMessage) -> dict:
+        """Build the webhook payload for a single content chunk."""
+        channel_label = f"#{msg.channel_name}" if msg.channel_name else f"#{msg.channel_id}"
+        payload = {
+            "username": f"@{msg.author} · {channel_label}",
+            "content": content,
+        }
+        if msg.author_id and msg.author_avatar:
+            payload["avatar_url"] = (
+                f"https://cdn.discordapp.com/avatars/{msg.author_id}/{msg.author_avatar}.png?size=128"
+            )
+        return payload
+
+    @staticmethod
+    def _log_warn(message: str) -> None:
+        """Best-effort warning log via mitmproxy ctx (no-op outside mitmdump)."""
+        try:
+            from mitmproxy import ctx  # type: ignore
+            ctx.log.warn(message)
+        except Exception:
+            pass
+
+    def _post_with_retry(self, url: str, payload: dict, max_retries: int = 5):
+        """POST one payload, pacing per ``rate_limit_delay`` and retrying on HTTP 429.
+
+        Returns the final :class:`requests.Response`, or ``None`` if the request
+        raised (network error). A 429 reply is honored via its ``retry_after``
+        so no chunk is silently dropped under Discord's webhook rate limit.
+        """
+        resp = None
+        for _ in range(max_retries):
+            self._wait_for_rate_limit()
+            try:
+                resp = requests.post(url, json=payload, timeout=10)
+            except requests.RequestException as e:
+                self._last_sent = time.time()
+                self._log_warn(f"☎️  Wirecord: webhook request failed: {e}")
+                return None
+            self._last_sent = time.time()
+            if resp.status_code != 429:
+                return resp
+            try:
+                retry_after = float(resp.json().get("retry_after", 1.0))
+            except Exception:
+                retry_after = 1.0
+            self._log_warn(f"☎️  Wirecord: webhook 429 — retrying after {retry_after}s")
+            time.sleep(retry_after + 0.3)
+        return resp  # exhausted retries — still 429
+
     def forward(self, msg: DiscordMessage) -> bool:
         """Forward a message to the webhook.
 
-        Blocks briefly to respect :attr:`rate_limit_delay`.
+        Content longer than 2000 characters is split into several consecutive
+        posts (Discord's per-message limit) rather than truncated. Each post is
+        paced by :attr:`rate_limit_delay` and retried on HTTP 429.
 
         Args:
             msg: The Discord message to send.
 
         Returns:
-            True on HTTP 204 (success), False otherwise.
+            True only if every chunk was accepted (HTTP 204), False otherwise.
         """
-        elapsed = time.time() - self._last_sent
-        if elapsed < self.rate_limit_delay:
-            time.sleep(self.rate_limit_delay - elapsed)
-
-        channel_label = f"#{msg.channel_name}" if msg.channel_name else f"#{msg.channel_id}"
-        payload = {
-            "username": f"@{msg.author} · {channel_label}",
-            "content": msg.content[:2000],
-        }
-        if msg.author_id and msg.author_avatar:
-            payload["avatar_url"] = (
-                f"https://cdn.discordapp.com/avatars/{msg.author_id}/{msg.author_avatar}.png?size=128"
-            )
-
-        try:
-            resp = requests.post(self.url, json=payload, timeout=10)
-            self._last_sent = time.time()
-            if resp.status_code == 204:
+        chunks = split_content(msg.content)
+        if not chunks:
+            return True
+        ok = True
+        for chunk in chunks:
+            resp = self._post_with_retry(self.url, self._payload(chunk, msg))
+            if resp is not None and resp.status_code == 204:
                 self.stats["sent"] += 1
-                return True
+                continue
             self.stats["errors"] += 1
-            from mitmproxy import ctx  # type: ignore
-            ctx.log.warn(f"☎️  Wirecord: webhook HTTP {resp.status_code}: {resp.text[:200]}")
-            return False
-        except requests.RequestException as e:
-            self.stats["errors"] += 1
-            from mitmproxy import ctx  # type: ignore
-            ctx.log.warn(f"☎️  Wirecord: webhook request failed: {e}")
-            return False
+            ok = False
+            if resp is not None:
+                self._log_warn(f"☎️  Wirecord: webhook HTTP {resp.status_code}: {resp.text[:200]}")
+        return ok
 
     def forward_and_get_id(self, msg: DiscordMessage) -> tuple | None:
         """Like :meth:`forward` but uses ``?wait=true`` to get the created message ID.
 
+        Long content is split into several posts; the returned ID is that of the
+        first chunk (so edit-notifications link to the start of the message).
+        Each post is paced and retried on HTTP 429.
+
         Returns:
-            ``(webhook_msg_id, channel_id, guild_id)`` on success, ``None`` on failure.
+            ``(webhook_msg_id, channel_id, guild_id)`` of the first chunk on
+            success, ``None`` if the first chunk fails.
         """
-        elapsed = time.time() - self._last_sent
-        if elapsed < self.rate_limit_delay:
-            time.sleep(self.rate_limit_delay - elapsed)
+        chunks = split_content(msg.content)
+        if not chunks:
+            return None
 
-        channel_label = f"#{msg.channel_name}" if msg.channel_name else f"#{msg.channel_id}"
-        payload = {
-            "username": f"@{msg.author} · {channel_label}",
-            "content": msg.content[:2000],
-        }
-        if msg.author_id and msg.author_avatar:
-            payload["avatar_url"] = (
-                f"https://cdn.discordapp.com/avatars/{msg.author_id}/{msg.author_avatar}.png?size=128"
+        result: tuple | None = None
+        for i, chunk in enumerate(chunks):
+            # Only the first chunk needs ?wait=true to capture the message id.
+            url = self.url + ("&wait=true" if "?" in self.url else "?wait=true") if i == 0 else self.url
+            resp = self._post_with_retry(url, self._payload(chunk, msg))
+            ok_status = resp is not None and (
+                resp.status_code == 200 if i == 0 else resp.status_code in (200, 204)
             )
-
-        wait_url = self.url + ("&wait=true" if "?" in self.url else "?wait=true")
-        try:
-            resp = requests.post(wait_url, json=payload, timeout=10)
-            self._last_sent = time.time()
-            if resp.status_code == 200:
+            if ok_status:
                 self.stats["sent"] += 1
-                data = resp.json()
-                return (str(data.get("id") or ""), str(data.get("channel_id") or ""), str(data.get("guild_id") or ""))
+                if i == 0:
+                    data = resp.json()
+                    result = (
+                        str(data.get("id") or ""),
+                        str(data.get("channel_id") or ""),
+                        str(data.get("guild_id") or ""),
+                    )
+                continue
             self.stats["errors"] += 1
-            from mitmproxy import ctx  # type: ignore
-            ctx.log.warn(f"☎️  Wirecord: webhook HTTP {resp.status_code}: {resp.text[:200]}")
-            return None
-        except requests.RequestException as e:
-            self.stats["errors"] += 1
-            from mitmproxy import ctx  # type: ignore
-            ctx.log.warn(f"☎️  Wirecord: webhook request failed: {e}")
-            return None
+            if resp is not None:
+                self._log_warn(f"☎️  Wirecord: webhook HTTP {resp.status_code}: {resp.text[:200]}")
+            if i == 0:
+                return None
+        return result
 
     def forward_edit_notification(
         self,
