@@ -1,0 +1,7 @@
+[Unit]
+Description=Rotate Wirecord process logs
+
+[Service]
+Type=oneshot
+ExecStart=/usr/sbin/logrotate --state /var/lib/logrotate/status /etc/logrotate.d/wirecord
+UMask=0077

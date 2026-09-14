@@ -1,49 +1,40 @@
 {
-  "_comment": "Wirecord configuration — copy to config.json and fill in your values",
-  "proxy_port": 8080,
+  "_comment": "Wirecord 3.1 : remplacer les IDs et le webhook avant utilisation. Aucun envoi avant activation et bootstrap.",
+  "proxy_port": 9090,
   "traffic_archive_dir": "traffic_archive",
-
-  "_comment_forward_mode": "Mode d'envoi par défaut : 'webhook' (message posté par un webhook) ou 'native' (vraie fonction Transférer de Discord). En mode natif, le message est posté par le compte lui-même : pas de badge APP, bloc « Transféré » natif, pièces jointes et embeds rendus par Discord. Contreparties : webhook_username/avatar ignorés, éditions non répercutées (un transfert est un snapshot figé).",
+  "state_path": "state/wirecord.sqlite3",
   "forward_mode": "webhook",
-
-  "_comment_user_token": "Token de compte Discord, requis uniquement en mode natif (les webhooks ne peuvent pas créer de transfert). Laisser vide pour une détection automatique depuis le client Discord local (~/.config/discord/Local Storage/leveldb).",
+  "user_id": "462628780574375936",
   "user_token": "",
-
-  "_comment_user_id": "Optionnel. ID du compte qui doit poster les transferts natifs, quand le client Discord contient plusieurs comptes. Sans lui, la détection prend le premier token trouvé (ordre non garanti). Ignoré si user_token est renseigné.",
-  "user_id": "",
-
+  "delivery_enabled": false,
+  "recovery_enabled": true,
+  "recovery_since": "2026-09-08T16:24:00Z",
+  "recovery_interval": 300,
+  "backup_dir": "backups",
   "forwards": [
     {
-      "_comment": "Rule 1 : deux canaux source → un webhook (canal de destination optionnel)",
-      "channels": ["SOURCE_CHANNEL_ID_1", "SOURCE_CHANNEL_ID_2"],
-      "webhook_url": "https://discord.com/api/webhooks/WEBHOOK_ID/WEBHOOK_TOKEN",
-      "webhook_channel_id": "DESTINATION_CHANNEL_ID",
-      "webhook_username": "Interceptor",
+      "rule_id": "example-webhook",
+      "label": "Serveur source / salon",
+      "channels": [
+        "111111111111111111"
+      ],
+      "webhook_url": "https://discord.com/api/webhooks/333333333333333333/REPLACE_WITH_WEBHOOK_TOKEN",
+      "webhook_channel_id": "222222222222222222",
       "rate_limit_delay": 0.5
     },
     {
-      "_comment": "Rule 2 : sans canal de destination explicite (webhook déjà lié à un canal)",
-      "channels": ["SOURCE_CHANNEL_ID_3"],
-      "webhook_url": "https://discord.com/api/webhooks/OTHER_WEBHOOK_ID/OTHER_TOKEN",
-      "webhook_channel_id": "DESTINATION_CHANNEL_ID",
-      "webhook_username": "Monitor",
-      "rate_limit_delay": 0.5
-    },
-    {
-      "_comment": "Rule 3 : transfert natif. 'forward_mode' surcharge la valeur globale. La destination est 'dest_channel_id', ou à défaut 'webhook_channel_id'. Aucun webhook_url n'est requis. rate_limit_delay est plancherisé à 1.0 s (limite de 5 messages / 5 s par canal).",
-      "channels": ["SOURCE_CHANNEL_ID_4"],
+      "rule_id": "example-native",
+      "label": "Serveur source / recherche",
+      "channels": [
+        "444444444444444444"
+      ],
       "forward_mode": "native",
-      "dest_channel_id": "DESTINATION_CHANNEL_ID",
-      "rate_limit_delay": 1.5
-    },
-    {
-      "_comment": "Rule 4 : transfert natif anti-pattern. 'send_delay_min'/'send_delay_max' -> chaque transfert attend un délai aléatoire tiré dans cette fourchette (plancher 1.0 s). 'user_ids' -> pool de comptes ; l'expéditeur est tiré au hasard à chaque transfert (chaque compte doit voir la source et atteindre la destination).",
-      "channels": ["SOURCE_CHANNEL_ID_5"],
-      "forward_mode": "native",
-      "dest_channel_id": "DESTINATION_CHANNEL_ID",
-      "send_delay_min": 2,
-      "send_delay_max": 8,
-      "user_ids": ["POSTER_ACCOUNT_ID_1", "POSTER_ACCOUNT_ID_2"]
+      "dest_channel_id": "555555555555555555",
+      "user_ids": [
+        "462628780574375936"
+      ],
+      "send_delay_min": 60,
+      "send_delay_max": 180
     }
   ]
 }

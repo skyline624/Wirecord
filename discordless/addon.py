@@ -22,25 +22,17 @@ if _PROJECT_ROOT not in sys.path:
 
     sys.path.insert(0, _PROJECT_ROOT)
 
-from collections import OrderedDict
 from typing import Dict, Set
 from urllib.parse import urlparse
 
 from mitmproxy import ctx, http  # type: ignore
 
+from discordless.archive import ArchiveWriter
+from discordless.runtime import Runtime
 from discordless.config import Config
 from discordless.decoder import GatewayDecoder
-from discordless.models import DiscordMessage
-from discordless.native_forward import (
-    NativeForwarder,
-    account_id,
-    resolve_token,
-    tokens_for_ids,
-)
-from discordless.webhook import WebhookForwarder
 
 # Domains whose traffic is archived (mirrors wumpus_in_the_middle.py)
-_MAX_TRACKED_MESSAGES = 1000
 
 _DISCORD_DOMAINS: Set[str] = {
     "discord.com",
@@ -93,8 +85,8 @@ class _Gatekeeper:
 
     def __init__(self, data_path: str, timeline_path: str) -> None:
         # "x" mode = exclusive create — raises FileExistsError if file already exists
-        self._data = open(data_path, "xb")
-        self._timeline = open(timeline_path, "x")
+        self._data = open(data_path, "xb", buffering=0)
+        self._timeline = open(timeline_path, "x", buffering=1)
 
     def save(self, message: http.Message) -> None:  # type: ignore[name-defined]
         length = self._data.write(message.content)
@@ -112,12 +104,7 @@ class WirecordAddon:
         self._config = Config()
         self._gatekeepers: Dict[int, _Gatekeeper] = {}
         self._decoders: Dict[int, GatewayDecoder] = {}
-        self._seen_responses: Set[tuple] = set()
-        self._seen_messages: Set[str] = set()
         self._gateway_count: int = 0
-        self._forwarders: Dict[str, WebhookForwarder] = {}  # channel_id → forwarder
-        # Maps (id(forwarder), discord_msg_id) → (webhook_msg_id, webhook_channel_id, guild_id)
-        self._forwarded: OrderedDict = OrderedDict()
         self._channel_info: Dict[str, tuple] = {}  # channel_id → (channel_name, guild_name)
         self._archive: str = "traffic_archive"
         self._request_index = None
@@ -145,103 +132,26 @@ class WirecordAddon:
             os.path.join(self._archive, "gateway_index"), "a+", buffering=1
         )
 
-        # Rebuild dedup set from existing request_index
-        self._request_index.seek(0)
-        for line in self._request_index:
-            parts = line.rstrip().split(maxsplit=4)
-            if len(parts) == 5:
-                _ts, _method, url, response_hash, _filename = parts
-                self._seen_responses.add((url, response_hash))
-
-        # Find next unused gateway sequence ID
+        self._writer = ArchiveWriter(self._archive)
         self._gateway_index.seek(0)
         self._gateway_count = max(
-            (int(line.split()[-1]) + 1 for line in self._gateway_index if line.strip()),
-            default=0,
-        )
-
-        # Resolve the pool of account tokens once — only native-forward rules
-        # need them. Explicit user_token (if any) is keyed by its own account id.
-        explicit_by_id: dict = {}
-        if self._config.native_enabled and self._config.user_token:
-            tok = self._config.user_token.strip()
-            explicit_by_id[account_id(tok) or self._config.user_id or ""] = tok
-
-        # Build channel → forwarder mapping from rules
-        self._forwarders = {}
-        native_count = 0
-        for rule in self._config.forwards:
-            if not rule.enabled:
-                continue
-            if rule.native:
-                ids = rule.poster_ids(self._config.user_id)
-                if ids:
-                    accounts = tokens_for_ids(ids, explicit_by_id)
-                    missing = [i for i in ids if i not in accounts]
-                    if missing:
-                        _log(f"WARNING: native pool for {rule.destination} — no token for {missing}")
-                else:
-                    # No id specified anywhere — fall back to the first token found.
-                    tok = resolve_token(self._config.user_token)
-                    accounts = {account_id(tok) or "": tok} if tok else {}
-                if not accounts:
-                    _log(f"native rule for {rule.destination} skipped — no usable account")
-                    continue
-                lo, hi = rule.delay_range
-                fwd = NativeForwarder(
-                    accounts=accounts,
-                    dest_channel_id=rule.destination,
-                    delay_min=lo,
-                    delay_max=hi,
-                )
-                pool = "/".join(accounts.keys())
-                _log(
-                    f"native rule → {rule.destination}: pool=[{pool}] delay={lo}-{hi}s"
-                )
-                native_count += 1
-            else:
-                fwd = WebhookForwarder(
-                    url=rule.webhook_url,
-                    username=rule.webhook_username,
-                    channel_id=rule.webhook_channel_id,
-                    rate_limit_delay=rule.rate_limit_delay,
-                )
-            for ch in rule.channels:
-                ch = str(ch)
-                if ch in self._forwarders:
-                    # Last rule wins — the earlier destination silently stops
-                    # receiving this channel, which is easy to do by accident
-                    # when adding a test rule for an already-monitored channel.
-                    _log(f"WARNING: channel {ch} is claimed by several rules — last one wins")
-                self._forwarders[ch] = fwd
-        if self._forwarders:
-            _log(
-                f"forwarding enabled — {len(self._forwarders)} channel(s) monitored "
-                f"({native_count} rule(s) in native forward mode)"
-            )
-        else:
-            _log("forwarding disabled (configure 'forwards' in config.json)")
+            (int(line.split()[-1]) + 1 for line in self._gateway_index if line.strip()), default=0)
+        self._runtime = Runtime(self._config, self._writer)
+        self._runtime.start()
 
         _log(f"archiving to {os.path.abspath(self._archive)}/")
         _log(f"next gateway ID: {self._gateway_count}")
 
     def done(self) -> None:
         """Flush and close all open file handles."""
+        if getattr(self, '_runtime', None):
+            self._runtime.close()
         if self._request_index:
             self._request_index.close()
         if self._gateway_index:
             self._gateway_index.close()
         for gk in self._gatekeepers.values():
             gk.close()
-        unique_fwds = set(self._forwarders.values())
-        # Stop native workers first, flushing anything still queued.
-        for f in unique_fwds:
-            if hasattr(f, "close"):
-                f.close()
-        if unique_fwds:
-            sent = sum(f.stats["sent"] for f in unique_fwds)
-            errors = sum(f.stats["errors"] for f in unique_fwds)
-            _log(f"shutdown — forwarded {sent} message(s), {errors} error(s)")
 
     # ------------------------------------------------------------------
     # HTTP responses (REST API)
@@ -261,24 +171,7 @@ class WirecordAddon:
         if not _is_discord(url) or not flow.response.content:
             return
 
-        response_hash = str(hash(flow.response.content))
-        if (url, response_hash) in self._seen_responses:
-            ctx.log.debug(f"☎️  Wirecord: skipping duplicate {url}")
-            return
-
-        filename = _safe_filename(
-            f"{len(self._seen_responses)}_{url[8:].rsplit('?', maxsplit=1)[0]}"
-        )
-        dest = os.path.join(self._archive, "requests", filename)
-        with open(dest, "wb") as f:
-            f.write(flow.response.content)
-
-        self._request_index.write(
-            f"{flow.response.timestamp_start} {flow.request.method}"
-            f" {url} {response_hash} {filename}\n"
-        )
-        self._seen_responses.add((url, response_hash))
-        _log(f"archived {url}")
+        self._writer.response(url, flow.response.content, flow.request.method, flow.response.timestamp_start)
 
     # ------------------------------------------------------------------
     # WebSocket Gateway
@@ -319,6 +212,7 @@ class WirecordAddon:
         if not isinstance(payload, dict):
             _log(f"DBG chunk={len(message.content)}b type={type(payload).__name__} first4={message.content[:4].hex()}")
             return
+        self._runtime.observe(flow_key, payload)
         t = payload.get("t")
         _log(f"DBG decoded t={t!r}")
         if t == "READY":
@@ -337,6 +231,7 @@ class WirecordAddon:
     def websocket_end(self, flow: http.HTTPFlow) -> None:
         """Clean up state when a Gateway connection closes."""
         flow_key = id(flow)
+        self._runtime.health.disconnected(flow_key)
         gk = self._gatekeepers.pop(flow_key, None)
         if gk:
             gk.close()
@@ -386,127 +281,11 @@ class WirecordAddon:
                     self._channel_info[cid] = (cname, guild_name)
 
     def _maybe_forward(self, d: dict) -> None:
-        """Forward a MESSAGE_CREATE payload if it matches a configured channel."""
-        channel_id = str(d.get("channel_id", ""))
-        forwarder = self._forwarders.get(channel_id)
-        if not forwarder:
-            return
-
-        author_data = d.get("author", {})
-        if isinstance(author_data, dict):
-            author = author_data.get("username", "unknown")
-            author_id = str(author_data.get("id", ""))
-            author_avatar = str(author_data.get("avatar", "") or "")
-        else:
-            author, author_id, author_avatar = "unknown", "", ""
-        content = str(d.get("content", "")).strip()
-        timestamp = str(d.get("timestamp", ""))
-        discord_msg_id = str(d.get("id", ""))
-        source_guild_id = str(d.get("guild_id") or "")
-        native = getattr(forwarder, "is_native", False)
-
-        attachments = d.get("attachments", [])
-        if native:
-            # A native forward references the source message, so Discord renders
-            # its attachments and embeds itself — pasting URLs would only add
-            # noise the original message never had.
-            has_media = bool(attachments or d.get("embeds") or d.get("sticker_items"))
-            if not content and not has_media:
-                return  # Nothing visible to forward
-            if not discord_msg_id:
-                return  # Cannot reference a message without its ID
-        else:
-            # Append attachment URLs to content so files/images are forwarded
-            if isinstance(attachments, list):
-                for att in attachments:
-                    if isinstance(att, dict):
-                        url = att.get("url", "")
-                        if url:
-                            content = f"{content}\n{url}" if content else url
-            if not content:
-                return  # Skip embed-only / empty messages
-
-        channel_name, guild_name = self._channel_info.get(channel_id, ("", ""))
-        msg = DiscordMessage(
-            channel_id=channel_id,
-            author=author,
-            content=content,
-            timestamp=timestamp,
-            channel_name=channel_name,
-            guild_name=guild_name,
-            author_id=author_id,
-            author_avatar=author_avatar,
-            message_id=discord_msg_id,
-            guild_id=source_guild_id,
-        )
-
-        if msg.dedup_key in self._seen_messages:
-            return
-        self._seen_messages.add(msg.dedup_key)
-
-        if native:
-            # Fire-and-forget: the worker paces (random delay) and posts off this
-            # thread. Native forwards are immutable snapshots, so there is no edit
-            # to track — no id round-trip needed.
-            forwarder.enqueue(msg)
-            _log(f"queued {discord_msg_id} for native forward → {forwarder.dest_channel_id}")
-            return
-
-        result = forwarder.forward_and_get_id(msg)
-        if result and discord_msg_id:
-            webhook_msg_id, webhook_channel_id, guild_id = result
-            # Prefer guild_id from source message if webhook response has none
-            guild_id = guild_id or source_guild_id
-            key = (id(forwarder), discord_msg_id)
-            if len(self._forwarded) >= _MAX_TRACKED_MESSAGES:
-                self._forwarded.popitem(last=False)  # FIFO eviction
-            self._forwarded[key] = (webhook_msg_id, webhook_channel_id, guild_id)
-            _log(f"forwarded {discord_msg_id} → webhook msg {webhook_msg_id}")
+        channel_name, _ = self._channel_info.get(str(d.get('channel_id', '')), ('', ''))
+        self._runtime.capture(d, channel_name)
 
     def _maybe_forward_edit(self, d: dict) -> None:
-        """Send an edit-notification if the edited message was previously forwarded."""
-        channel_id = str(d.get("channel_id", ""))
-        forwarder = self._forwarders.get(channel_id)
-        if not forwarder:
-            return
-        if not getattr(forwarder, "supports_edits", True):
-            # A native forward is an immutable snapshot: Discord offers no way to
-            # update it, and posting a separate "edited" notice would expose the
-            # relay as automated. Edits are intentionally dropped in native mode.
-            return
-
-        discord_msg_id = str(d.get("id", ""))
-        if not discord_msg_id:
-            return
-
-        tracked = self._forwarded.get((id(forwarder), discord_msg_id))
-        if not tracked:
-            return  # Not forwarded in this session
-
-        webhook_msg_id, webhook_channel_id, guild_id = tracked
-
-        author_data = d.get("author", {})
-        if isinstance(author_data, dict):
-            author = author_data.get("username", "unknown")
-            author_id = str(author_data.get("id", ""))
-            author_avatar = str(author_data.get("avatar", "") or "")
-        else:
-            author, author_id, author_avatar = "unknown", "", ""
-
-        new_content = str(d.get("content", "")).strip()
-        if not new_content:
-            return  # Embed-only edit — skip
-
-        forwarder.forward_edit_notification(
-            original_msg_id=webhook_msg_id,
-            webhook_channel_id=webhook_channel_id,
-            guild_id=guild_id,
-            new_content=new_content,
-            author=author,
-            author_id=author_id,
-            author_avatar=author_avatar,
-        )
-        _log(f"edit-notification sent for discord msg {discord_msg_id}")
+        self._runtime.edit(d)
 
 
 addons = [WirecordAddon()]

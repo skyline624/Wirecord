@@ -1,0 +1,13 @@
+[Unit]
+Description=Verified Wirecord backup
+After=network.target
+
+[Service]
+Type=oneshot
+User=root
+WorkingDirectory=/root/discord/wirecord
+Environment=PYTHONPATH=/root/discord/wirecord
+ExecStart=/root/discord/wirecord/venv/bin/python -m discordless backup
+UMask=0077
+Nice=15
+IOSchedulingClass=idle

@@ -25,7 +25,15 @@ config.json
 venv/
 # Backup files
 *.backup
-*.md
+state/
+backups/
+export_*/
+recovery_*/
+config.json.bak*
+*.legacy
+scripts/.replay_sent_*.txt
+vps-copy-sha256.json
+.superpowers/
 .claude
 .vexp
 *.com.txt

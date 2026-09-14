@@ -3,9 +3,13 @@
 The config file is a JSON file (default: config.json) at the project root.
 Keys starting with '_' are treated as comments and ignored.
 """
+
 import json
+import hashlib
+import math
+import re
+from datetime import datetime
 from dataclasses import dataclass, field
-from pathlib import Path
 from typing import List
 
 
@@ -13,8 +17,13 @@ DEFAULT_CONFIG_PATH = "config.json"
 
 # Delivery modes for a forwarding rule.
 MODE_WEBHOOK = "webhook"  # POST to a webhook URL as a rich message (default)
-MODE_NATIVE = "native"    # POST as a real Discord "Forward" using an account token
+MODE_NATIVE = "native"  # POST as a real Discord "Forward" using an account token
 VALID_MODES = (MODE_WEBHOOK, MODE_NATIVE)
+ACCOUNT_ID = "462628780574375936"
+
+
+class ConfigError(ValueError):
+    """Safe configuration error: never includes a credential or raw value."""
 
 
 @dataclass
@@ -48,6 +57,8 @@ class ForwardRule:
     send_delay_min: float = 0.0
     send_delay_max: float = 0.0
     user_ids: List[str] = field(default_factory=list)
+    rule_id: str = ""
+    label: str = ""
 
     @classmethod
     def from_dict(cls, data: dict, default_mode: str = MODE_WEBHOOK) -> "ForwardRule":
@@ -130,12 +141,17 @@ class Config:
     user_token: str = ""
     user_id: str = ""
     forwards: List[ForwardRule] = field(default_factory=list)
+    state_path: str = "state/wirecord.sqlite3"
+    delivery_enabled: bool = False
+    recovery_enabled: bool = True
+    recovery_since: str = "2026-09-08T16:24:00Z"
+    recovery_interval: float = 300
 
     @classmethod
     def load(cls, path: str = DEFAULT_CONFIG_PATH) -> "Config":
         """Load configuration from a JSON file.
 
-        Falls back to default values for a missing or malformed file.
+        Missing or malformed files fail explicitly without exposing their content.
 
         Args:
             path: Path to the JSON config file.
@@ -143,31 +159,139 @@ class Config:
         Returns:
             Config instance populated from the file.
         """
-        p = Path(path)
-        if not p.exists():
-            return cls()
         try:
-            with open(p, "r", encoding="utf-8") as f:
+            with open(path, "r", encoding="utf-8") as f:
                 data = json.load(f)
+            if not isinstance(data, dict):
+                raise ConfigError("Configuration must be an object")
             data = {k: v for k, v in data.items() if not k.startswith("_")}
             mode = str(data.get("forward_mode", MODE_WEBHOOK)).lower()
             if mode not in VALID_MODES:
-                mode = MODE_WEBHOOK
-            forwards = [
-                ForwardRule.from_dict(r, mode)
-                for r in data.get("forwards", [])
-                if isinstance(r, dict)
-            ]
-            return cls(
+                raise ConfigError("Invalid forward_mode")
+            raw_rules = data.get("forwards", [])
+            if not isinstance(raw_rules, list) or any(
+                not isinstance(r, dict) for r in raw_rules
+            ):
+                raise ConfigError("forwards must be a list of objects")
+            for r in raw_rules:
+                if r.get("forward_mode", mode) not in VALID_MODES:
+                    raise ConfigError("Invalid rule forward_mode")
+            forwards = [ForwardRule.from_dict(r, mode) for r in raw_rules]
+            cfg = cls(
                 proxy_port=data.get("proxy_port", 8080),
                 traffic_archive_dir=data.get("traffic_archive_dir", "traffic_archive"),
                 forward_mode=mode,
                 user_token=str(data.get("user_token", "") or ""),
-                user_id=str(data.get("user_id", "") or ""),
+                user_id=str(data.get("user_id", ACCOUNT_ID) or ACCOUNT_ID),
                 forwards=forwards,
+                state_path=data.get("state_path", "state/wirecord.sqlite3"),
+                delivery_enabled=data.get("delivery_enabled", False),
+                recovery_enabled=data.get("recovery_enabled", True),
+                recovery_since=data.get("recovery_since", "2026-09-08T16:24:00Z"),
+                recovery_interval=data.get("recovery_interval", 300),
             )
-        except (json.JSONDecodeError, TypeError):
-            return cls()
+            cfg.validate()
+            return cfg
+        except ConfigError:
+            raise
+        except (OSError, ValueError, TypeError, AttributeError):
+            raise ConfigError(
+                "Cannot load configuration: missing, malformed or invalid file"
+            ) from None
+
+    def validate(self):
+        if type(self.proxy_port) is not int or not 1 <= self.proxy_port <= 65535:
+            raise ConfigError("Invalid proxy_port")
+        if self.user_id != ACCOUNT_ID:
+            raise ConfigError("Only the configured Jarl Panda account is permitted")
+        if self.user_token:
+            import base64
+
+            try:
+                owner = base64.urlsafe_b64decode(
+                    self.user_token.split(".")[0] + "==="
+                ).decode()
+            except Exception:
+                raise ConfigError("Invalid user_token account encoding") from None
+            if owner != ACCOUNT_ID:
+                raise ConfigError("user_token belongs to a disallowed account")
+        for key in ("delivery_enabled", "recovery_enabled"):
+            if type(getattr(self, key)) is not bool:
+                raise ConfigError(f"{key} must be boolean")
+        for key in ("state_path", "traffic_archive_dir"):
+            if (
+                not isinstance(getattr(self, key), str)
+                or not getattr(self, key).strip()
+            ):
+                raise ConfigError(f"Invalid {key}")
+        dt = datetime.fromisoformat(self.recovery_since.replace("Z", "+00:00"))
+        if dt.tzinfo is None:
+            raise ConfigError("recovery_since must include timezone")
+        if (
+            isinstance(self.recovery_interval, bool)
+            or not math.isfinite(float(self.recovery_interval))
+            or float(self.recovery_interval) < 1
+        ):
+            raise ConfigError("Invalid recovery_interval")
+        self.recovery_interval = float(self.recovery_interval)
+        ids = set()
+        routes = set()
+        for rule in self.forwards:
+            if (
+                not isinstance(rule.channels, list)
+                or not rule.channels
+                or any(not str(c).isdigit() for c in rule.channels)
+            ):
+                raise ConfigError("Invalid source channels")
+            rule.channels = [str(c) for c in rule.channels]
+            if any(uid != ACCOUNT_ID for uid in rule.user_ids):
+                raise ConfigError("Rule contains disallowed account")
+            if rule.native and not rule.destination.isdigit():
+                raise ConfigError("Native rule requires destination channel ID")
+            if not rule.native and not rule.destination.isdigit():
+                raise ConfigError("Webhook rule requires destination channel ID")
+            if not rule.native and not re.fullmatch(
+                r"https://(?:canary\.|ptb\.)?discord(?:app)?\.com/api(?:/v\d+)?/webhooks/\d+/[^/?#]+",
+                rule.webhook_url,
+            ):
+                raise ConfigError("Invalid webhook destination")
+            if rule.webhook_channel_id and not str(rule.webhook_channel_id).isdigit():
+                raise ConfigError("Invalid webhook channel ID")
+            for name in ("rate_limit_delay", "send_delay_min", "send_delay_max"):
+                v = getattr(rule, name)
+                if isinstance(v, bool) or not math.isfinite(float(v)) or float(v) < 0:
+                    raise ConfigError("Invalid rule delay")
+            if float(rule.send_delay_max) < float(rule.send_delay_min):
+                raise ConfigError("Invalid rule delay range")
+            identity = json.dumps(
+                [
+                    sorted(rule.channels),
+                    rule.forward_mode,
+                    rule.destination,
+                    rule.webhook_url.split("/")[-2] if not rule.native else "",
+                ]
+            )
+            rule.rule_id = (
+                rule.rule_id or hashlib.sha256(identity.encode()).hexdigest()[:16]
+            )
+            if (
+                not isinstance(rule.rule_id, str)
+                or not re.fullmatch(r"[A-Za-z0-9_-]{1,80}", rule.rule_id)
+                or rule.rule_id in ids
+            ):
+                raise ConfigError("Invalid or duplicate rule_id")
+            ids.add(rule.rule_id)
+            rule.label = (
+                rule.label
+                or f"{','.join(rule.channels)} -> {rule.destination or 'webhook'}"
+            )
+            if not isinstance(rule.label, str):
+                raise ConfigError("Invalid rule label")
+            for channel in rule.channels:
+                route = (channel, rule.destination or rule.webhook_url)
+                if route in routes:
+                    raise ConfigError("Duplicate source/destination route")
+                routes.add(route)
 
     @property
     def forwarding_enabled(self) -> bool:

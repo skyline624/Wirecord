@@ -4,7 +4,7 @@ build-backend = "hatchling.build"
 
 [project]
 name = "wirecord"
-version = "3.0.0"
+version = "3.1.0"
 description = "Discord traffic interceptor and webhook forwarder"
 readme = "readme.md"
 requires-python = ">=3.10"
@@ -16,6 +16,7 @@ dependencies = [
     "pyzstd",
     "filetype",
     "python-dateutil",
+    "tzdata; platform_system == 'Windows'",
 ]
 
 [project.optional-dependencies]

@@ -23,7 +23,8 @@ def minimal_config_file(tmp_path):
         "forwards": [
             {
                 "channels": ["111111111111111111"],
-                "webhook_url": "https://discord.com/api/webhooks/test/token",
+                "webhook_url": "https://discord.com/api/webhooks/123/token",
+                "webhook_channel_id": "999999999999999999",
                 "webhook_username": "TestBot",
                 "rate_limit_delay": 0.0,
             }
@@ -40,16 +41,17 @@ def native_config_file(tmp_path):
     cfg = {
         "proxy_port": 8080,
         "forward_mode": "native",
-        "user_token": "test.token.value",
+        "user_token": "NDYyNjI4NzgwNTc0Mzc1OTM2.fake.signature",
         "forwards": [
             {
                 "channels": ["111111111111111111"],
-                "webhook_url": "https://discord.com/api/webhooks/test/token",
+                "webhook_url": "https://discord.com/api/webhooks/123/token",
                 "webhook_channel_id": "999999999999999999",
             },
             {
                 "channels": ["222222222222222222"],
-                "webhook_url": "https://discord.com/api/webhooks/other/token",
+                "webhook_url": "https://discord.com/api/webhooks/456/token",
+                "webhook_channel_id": "888888888888888888",
                 "forward_mode": "webhook",
             },
         ],

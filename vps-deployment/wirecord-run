@@ -1,36 +1,55 @@
 #!/usr/bin/env bash
-# Wirecord headless launcher — runs mitmdump (foreground) and Discord (background)
-# in the Xvfb display managed by xvfb@99.service
 set -euo pipefail
-
-WIRECORD_DIR=/root/discord/wirecord
-PROXY_PORT=9090
-
+WIRECORD_DIR="${WIRECORD_DIR:-/root/discord/wirecord}"
 cd "$WIRECORD_DIR"
-source venv/bin/activate
+PYTHON="${WIRECORD_PYTHON:-$WIRECORD_DIR/venv/bin/python}"
+MITM="${WIRECORD_MITM:-$WIRECORD_DIR/venv/bin/mitmdump}"
+DISCORD="${WIRECORD_DISCORD:-discord}"
+export PYTHONPATH="$WIRECORD_DIR${PYTHONPATH:+:$PYTHONPATH}"
 mkdir -p logs
-
-# Kill all child processes when this script exits (systemd stop or crash)
-trap 'kill 0 2>/dev/null || true' EXIT
-
-# Start mitmdump in background, log to file
-venv/bin/mitmdump \
-    -s discordless/addon.py \
-    --listen-host 127.0.0.1 \
-    --listen-port="$PROXY_PORT" \
+"$PYTHON" -m discordless check-config
+PORT=$("$PYTHON" -c 'from discordless.config import Config; print(Config.load().proxy_port)')
+children=()
+cleanup() {
+    trap - EXIT TERM INT
+    if ((${#children[@]})); then
+        kill "${children[@]}" 2>/dev/null || true
+        wait "${children[@]}" 2>/dev/null || true
+    fi
+}
+trap cleanup EXIT
+trap 'exit 0' TERM INT
+"$MITM" -s discordless/addon.py --listen-host 127.0.0.1 --listen-port="$PORT" \
     --allow-hosts '^(((.+\.)?discord\.com)|((.+\.)?discordapp\.com)|((.+\.)?discord\.net)|((.+\.)?discordapp\.net)|((.+\.)?discord\.gg))(?::\d+)?$' \
-    >> logs/mitmdump.log 2>&1 &
+    >>logs/mitmdump.log 2>&1 &
 MITM_PID=$!
-echo "[wirecord-run] mitmdump started (PID $MITM_PID, port $PROXY_PORT)"
-
-# Wait briefly for mitmdump to bind
-sleep 2
-
-# Start Discord in background within Xvfb display ($DISPLAY=:99 from systemd Environment)
-discord --proxy-server="127.0.0.1:$PROXY_PORT" --no-sandbox \
-    >> logs/discord.log 2>&1 &
-DISCORD_PID=$!
-echo "[wirecord-run] discord started (PID $DISCORD_PID, DISPLAY=$DISPLAY)"
-
-# Block on mitmdump; if it exits, the trap kills Discord and systemd restarts the unit
-wait "$MITM_PID"
+children+=("$MITM_PID")
+"$PYTHON" - "$PORT" "$MITM_PID" <<'PY'
+import os,socket,sys,time
+deadline=time.monotonic()+60
+while time.monotonic()<deadline:
+    os.kill(int(sys.argv[2]),0)
+    try:
+        with socket.create_connection(('127.0.0.1',int(sys.argv[1])),timeout=1):
+            break
+    except OSError:
+        time.sleep(.25)
+else:
+    raise SystemExit('Proxy did not become ready')
+PY
+"$DISCORD" --proxy-server="127.0.0.1:$PORT" --no-sandbox >>logs/discord.log 2>&1 &
+children+=("$!")
+watchdog() {
+    sleep "${WIRECORD_STARTUP_GRACE:-120}"
+    while true; do
+        "$PYTHON" -m discordless health || return 1
+        sleep 10
+    done
+}
+watchdog &
+children+=("$!")
+set +e
+wait -n "${children[@]}"
+set -e
+echo '[wirecord-run] A managed process exited or Gateway health failed; restarting service.'
+exit 1

@@ -1,0 +1,10 @@
+[Unit]
+Description=Daily Wirecord backup at 04:00 Paris
+
+[Timer]
+OnCalendar=*-*-* 04:00:00 Europe/Paris
+Persistent=true
+AccuracySec=1min
+
+[Install]
+WantedBy=timers.target

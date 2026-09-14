@@ -1,16 +1,14 @@
 """Tests for discordless.config."""
 import json
+import pytest
 
-from discordless.config import MODE_NATIVE, MODE_WEBHOOK, Config, ForwardRule
+from discordless.config import MODE_NATIVE, MODE_WEBHOOK, Config, ForwardRule, ConfigError, ACCOUNT_ID
 
 
 class TestConfigLoad:
-    def test_defaults_when_file_missing(self, tmp_path):
-        cfg = Config.load(str(tmp_path / "nonexistent.json"))
-        assert cfg.proxy_port == 8080
-        assert cfg.forwards == []
-        assert cfg.forward_mode == MODE_WEBHOOK
-        assert cfg.forwarding_enabled is False
+    def test_rejects_missing_file(self, tmp_path):
+        with pytest.raises(ConfigError):
+            Config.load(str(tmp_path / "nonexistent.json"))
 
     def test_loads_values_from_file(self, minimal_config_file):
         cfg = Config.load(minimal_config_file)
@@ -18,7 +16,7 @@ class TestConfigLoad:
         assert len(cfg.forwards) == 1
         rule = cfg.forwards[0]
         assert rule.channels == ["111111111111111111"]
-        assert rule.webhook_url == "https://discord.com/api/webhooks/test/token"
+        assert rule.webhook_url == "https://discord.com/api/webhooks/123/token"
         assert rule.webhook_username == "TestBot"
         assert rule.rate_limit_delay == 0.0
         assert cfg.forwarding_enabled is True
@@ -40,8 +38,8 @@ class TestConfigLoad:
     def test_defaults_on_invalid_json(self, tmp_path):
         p = tmp_path / "config.json"
         p.write_text("not valid json")
-        cfg = Config.load(str(p))
-        assert cfg.proxy_port == 8080
+        with pytest.raises(ConfigError):
+            Config.load(str(p))
 
 
 class TestForwardingEnabled:
@@ -84,9 +82,8 @@ class TestForwardMode:
         data = {"forward_mode": "carrier-pigeon", "forwards": [{"channels": ["1"], "webhook_url": "u"}]}
         p = tmp_path / "config.json"
         p.write_text(json.dumps(data))
-        cfg = Config.load(str(p))
-        assert cfg.forward_mode == MODE_WEBHOOK
-        assert cfg.forwards[0].native is False
+        with pytest.raises(ConfigError):
+            Config.load(str(p))
 
     def test_native_enabled_reports_any_native_rule(self, native_config_file):
         cfg = Config.load(native_config_file)
@@ -98,11 +95,11 @@ class TestForwardMode:
 
     def test_user_token_loaded(self, native_config_file):
         cfg = Config.load(native_config_file)
-        assert cfg.user_token == "test.token.value"
+        assert cfg.user_token == "NDYyNjI4NzgwNTc0Mzc1OTM2.fake.signature"
 
     def test_user_id_defaults_empty(self, native_config_file):
         cfg = Config.load(native_config_file)
-        assert cfg.user_id == ""
+        assert cfg.user_id == ACCOUNT_ID
 
     def test_user_id_loaded(self, tmp_path):
         data = {"forward_mode": "native", "user_id": "462628780574375936", "forwards": []}
@@ -200,6 +197,5 @@ class TestPosterIds:
         }
         p = tmp_path / "config.json"
         p.write_text(json.dumps(data))
-        cfg = Config.load(str(p))
-        assert cfg.forwards[0].user_ids == ["123", "456"]
-        assert cfg.forwards[0].poster_ids() == ["123", "456"]
+        with pytest.raises(ConfigError):
+            Config.load(str(p))

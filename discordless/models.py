@@ -27,6 +27,8 @@ class DiscordMessage:
     author_avatar: str = ""
     message_id: str = ""
     guild_id: str = ""
+    embeds: tuple = ()
+    attachments: tuple = ()
 
     @property
     def dedup_key(self) -> str:

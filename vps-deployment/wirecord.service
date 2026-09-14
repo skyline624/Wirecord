@@ -5,6 +5,8 @@ After=network-online.target xvfb@99.service
 Wants=network-online.target
 Requires=xvfb@99.service
 BindsTo=xvfb@99.service
+StartLimitIntervalSec=900
+StartLimitBurst=3
 
 [Service]
 Type=simple
@@ -16,7 +18,8 @@ ExecStart=/usr/local/bin/wirecord-run
 Restart=on-failure
 RestartSec=10
 KillMode=control-group
-TimeoutStopSec=20
+TimeoutStopSec=35
+UMask=0077
 
 # Hardening
 PrivateTmp=true
