@@ -15,7 +15,7 @@ cp config.example.json config.json
 venv/bin/python -m discordless check-config
 ```
 
-Renseigner les identifiants réels et les destinations explicites. Les transferts natifs et les récupérations utilisent exclusivement Jarl Panda. Le token est lu dans le stockage du client local ou fourni dans la configuration privée ; il n'est jamais affiché.
+Renseigner les identifiants réels et les destinations explicites. `user_id` choisit le compte de lecture par défaut. Pour les transferts natifs, `user_ids` dans chaque règle définit les comptes autorisés : chaque envoi choisit au hasard un compte disponible parmi eux. Sans cette liste, la règle utilise `user_id`. Chaque compte dispose de sa propre session authentifiée ; ses identifiants sont lus dans le stockage du client local ou fournis dans la configuration privée, sans être affichés.
 
 ## Exploitation
 

@@ -128,10 +128,9 @@ class Config:
         forward_mode: Default delivery mode for every rule (``webhook`` or ``native``).
         user_token: Discord account token for native mode. Left empty, the token
             is auto-detected from the local Discord client's leveldb store.
-        user_id: Discord account id that native forwards should post as. When the
-            client holds several accounts, this pins the poster to one of them
-            (auto-detection otherwise takes the first token found). Ignored when
-            ``user_token`` is set.
+        user_id: Default reader and fallback poster when a rule has no user_ids.
+            A rule's user_ids define its own random sender pool; each account is
+            authenticated separately, including when user_token is supplied.
         forwards: List of forwarding rules (channels → destination).
     """
 
@@ -139,7 +138,7 @@ class Config:
     traffic_archive_dir: str = "traffic_archive"
     forward_mode: str = MODE_WEBHOOK
     user_token: str = ""
-    user_id: str = ""
+    user_id: str = ACCOUNT_ID
     forwards: List[ForwardRule] = field(default_factory=list)
     state_path: str = "state/wirecord.sqlite3"
     delivery_enabled: bool = False
@@ -202,8 +201,8 @@ class Config:
     def validate(self):
         if type(self.proxy_port) is not int or not 1 <= self.proxy_port <= 65535:
             raise ConfigError("Invalid proxy_port")
-        if self.user_id != ACCOUNT_ID:
-            raise ConfigError("Only the configured Jarl Panda account is permitted")
+        if not re.fullmatch(r"[0-9]{17,20}", str(self.user_id)):
+            raise ConfigError("Invalid user_id")
         if self.user_token:
             import base64
 
@@ -213,8 +212,8 @@ class Config:
                 ).decode()
             except Exception:
                 raise ConfigError("Invalid user_token account encoding") from None
-            if owner != ACCOUNT_ID:
-                raise ConfigError("user_token belongs to a disallowed account")
+            if owner not in self.account_ids:
+                raise ConfigError("user_token belongs to an unconfigured account")
         for key in ("delivery_enabled", "recovery_enabled"):
             if type(getattr(self, key)) is not bool:
                 raise ConfigError(f"{key} must be boolean")
@@ -244,8 +243,8 @@ class Config:
             ):
                 raise ConfigError("Invalid source channels")
             rule.channels = [str(c) for c in rule.channels]
-            if any(uid != ACCOUNT_ID for uid in rule.user_ids):
-                raise ConfigError("Rule contains disallowed account")
+            if any(not re.fullmatch(r"[0-9]{17,20}", uid) for uid in rule.user_ids):
+                raise ConfigError("Invalid rule account ID")
             if rule.native and not rule.destination.isdigit():
                 raise ConfigError("Native rule requires destination channel ID")
             if not rule.native and not rule.destination.isdigit():
@@ -292,6 +291,14 @@ class Config:
                 if route in routes:
                     raise ConfigError("Duplicate source/destination route")
                 routes.add(route)
+
+    @property
+    def account_ids(self) -> frozenset:
+        """Only accounts explicitly configured as the reader or a rule's poster."""
+        return frozenset(
+            [str(self.user_id or ACCOUNT_ID)]
+            + [uid for rule in self.forwards for uid in rule.user_ids]
+        )
 
     @property
     def forwarding_enabled(self) -> bool:

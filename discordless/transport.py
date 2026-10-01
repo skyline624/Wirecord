@@ -2,6 +2,7 @@
 
 import base64
 import hashlib
+import random
 import time
 
 import requests
@@ -131,35 +132,89 @@ class DiscordAPI:
         self.webhooks = requests.Session()
         self.webhooks.trust_env = False
         self.authenticated = False
+        self._sessions = {}
+        self._authenticated_accounts = set()
+        self._disabled_accounts = set()
 
-    def authenticate(self):
-        candidates = (
-            [self.config.user_token] if self.config.user_token else _collect_tokens()
-        )
+    @property
+    def reader_id(self):
+        return str(self.config.user_id or ACCOUNT_ID)
+
+    def _session_for(self, account_id):
+        if account_id not in self.config.account_ids:
+            raise APIError(401)
+        if account_id == self.reader_id:
+            return self.session
+        if account_id not in self._sessions:
+            session = requests.Session()
+            session.trust_env = False
+            self._sessions[account_id] = session
+        return self._sessions[account_id]
+
+    def _invalidate(self, account_id):
+        self._authenticated_accounts.discard(account_id)
+        if account_id == self.reader_id:
+            self.authenticated = False
+        self._session_for(account_id).headers.pop("Authorization", None)
+
+    def _authenticated_session(self, account_id):
+        session = self._session_for(account_id)
+        if account_id not in self._authenticated_accounts and not (
+            account_id == self.reader_id and self.authenticated
+        ):
+            self.authenticate(account_id)
+        return session
+
+    def authenticate(self, account_id=None):
+        target = str(account_id or self.reader_id)
+        session = self._session_for(target)
+        # The explicit credential supplements the client store: another configured
+        # poster still needs its own credential and its own authenticated session.
+        candidates = list(dict.fromkeys(
+            ([self.config.user_token] if self.config.user_token else []) + _collect_tokens()
+        ))
+        failure = 401
         for token in candidates:
             try:
                 owner = base64.urlsafe_b64decode(token.split(".")[0] + "===").decode()
             except Exception:
                 continue
-            if owner != ACCOUNT_ID:
+            if owner != target:
                 continue
-            self.session.headers.update(client_headers(token))
+            session.headers.update(client_headers(token))
             try:
-                r = self.session.get(API_BASE + "/users/@me", timeout=15)
-                if r.status_code == 200 and r.json().get("id") == ACCOUNT_ID:
-                    self.authenticated = True
-                    return
+                r = session.get(API_BASE + "/users/@me", timeout=15)
+                if r.status_code == 200 and str(r.json().get("id")) == target:
+                    self._authenticated_accounts.add(target)
+                    if target == self.reader_id:
+                        self.authenticated = True
+                    return session
+                failure = r.status_code if r.status_code != 200 else 401
             except (requests.RequestException, ValueError):
+                failure = 0
                 continue
-        self.session.headers.pop("Authorization", None)
-        raise APIError(401)
+        self._invalidate(target)
+        raise APIError(failure)
 
-    def get(self, endpoint, params=None):
-        if not self.authenticated:
-            self.authenticate()
+    def get(self, endpoint, params=None, account_ids=None):
+        accounts = list(dict.fromkeys(str(uid) for uid in (
+            [self.reader_id] if account_ids is None else account_ids
+        )))
+        error = APIError(401)
+        for uid in accounts:
+            try:
+                return self._get_as(uid, endpoint, params)
+            except APIError as failed:
+                error = failed
+                if failed.status not in (401, 403, 404):
+                    raise
+        raise error
+
+    def _get_as(self, account_id, endpoint, params):
+        session = self._authenticated_session(account_id)
         for attempt in range(6):
             try:
-                r = self.session.get(API_BASE + endpoint, params=params, timeout=20)
+                r = session.get(API_BASE + endpoint, params=params, timeout=20)
             except requests.RequestException:
                 if attempt == 5:
                     raise APIError(0) from None
@@ -174,17 +229,19 @@ class DiscordAPI:
                 time.sleep(min(2**attempt, 16))
                 continue
             if r.status_code == 401:
-                self.authenticated = False
+                self._invalidate(account_id)
             raise APIError(r.status_code)
         raise APIError(429)
 
-    def history(self, channel, after, stop=None):
+    def history(self, channel, after, stop=None, account_ids=None):
         before = stop
         for _ in range(10000):
             params = {"limit": 100}
             if before:
                 params["before"] = str(before)
-            page = self.get(f"/channels/{channel}/messages", params)
+            page = self.get(f"/channels/{channel}/messages", params, **(
+                {"account_ids": account_ids} if account_ids is not None else {}
+            ))
             if not page:
                 return
             for message in page:
@@ -199,20 +256,51 @@ class DiscordAPI:
             time.sleep(0.3)
         raise APIError(0)
 
-    def read_message(self, channel, mid):
-        page = self.get(f"/channels/{channel}/messages", {"around": mid, "limit": 10})
+    def read_message(self, channel, mid, account_ids=None):
+        page = self.get(f"/channels/{channel}/messages", {"around": mid, "limit": 10}, **(
+            {"account_ids": account_ids} if account_ids is not None else {}
+        ))
         return next((m for m in page if m["id"] == mid), None)
 
     def send(self, rule, payload):
         # No implicit retry of POST: response loss is a durable uncertain delivery.
         if rule.native:
-            if not self.authenticated:
-                self.authenticate()
-            return self.session.post(
-                API_BASE + f"/channels/{rule.destination}/messages",
-                json=payload,
-                timeout=20,
-            )
+            accounts = [uid for uid in dict.fromkeys(rule.poster_ids(self.reader_id))
+                        if uid not in self._disabled_accounts]
+            rejected = None
+            failure = APIError(401)
+            temporary_failure = None
+            while accounts:
+                uid = random.choice(accounts)
+                accounts.remove(uid)
+                try:
+                    session = self._authenticated_session(uid)
+                except APIError as error:
+                    failure = error
+                    if error.status == 401:
+                        self._disabled_accounts.add(uid)
+                    elif error.status == 0 or error.status == 429 or error.status >= 500:
+                        temporary_failure = error
+                    continue
+                # A lost response or a 5xx may conceal a successful POST. Never
+                # switch accounts and POST again for those ambiguous outcomes.
+                response = session.post(
+                    API_BASE + f"/channels/{rule.destination}/messages",
+                    json=payload,
+                    timeout=20,
+                )
+                if response.status_code == 401:
+                    self._invalidate(uid)
+                    self._disabled_accounts.add(uid)
+                if response.status_code in (401, 403):
+                    rejected = response
+                    continue
+                return response
+            if temporary_failure is not None:
+                raise temporary_failure
+            if rejected is not None:
+                return rejected
+            raise failure
         params = {"wait": "true"}
         if rule.webhook_channel_id:
             params["thread_id"] = rule.webhook_channel_id
@@ -221,7 +309,7 @@ class DiscordAPI:
         )
 
 
-def matches(payload, candidate, native=False, require_account=True):
+def matches(payload, candidate, native=False, require_account=True, account_ids=None):
     if native:
         reference = candidate.get("message_reference", {})
         return (
@@ -230,7 +318,9 @@ def matches(payload, candidate, native=False, require_account=True):
             == payload["message_reference"]["message_id"]
             and (
                 not require_account
-                or candidate.get("author", {}).get("id") == ACCOUNT_ID
+                or str(candidate.get("author", {}).get("id")) in (
+                    [ACCOUNT_ID] if account_ids is None else account_ids
+                )
             )
         )
     author = candidate.get("author", {}).get("username", "")

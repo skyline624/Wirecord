@@ -70,6 +70,7 @@ def state_report(config):
             {
                 "rule_id": r.rule_id,
                 "label": r.label,
+                "poster_ids": r.poster_ids(config.user_id) if r.native else [],
                 "sources": r.channels,
                 "destination": r.destination,
                 "counts": counts,
@@ -246,10 +247,13 @@ def main(argv=None):
                     raise ValueError("Confirmation requires destination ID")
                 rule = next(r for r in config.forwards if r.rule_id == row["rule"])
                 candidate = DiscordAPI(config).read_message(
-                    rule.destination, args.destination_id
+                    rule.destination, args.destination_id, **(
+                        {"account_ids": rule.poster_ids(config.user_id)} if rule.native else {}
+                    )
                 )
                 if not candidate or not matches(
-                    json.loads(row["payload"]), candidate, rule.native
+                    json.loads(row["payload"]), candidate, rule.native,
+                    account_ids=rule.poster_ids(config.user_id) if rule.native else None
                 ):
                     raise ValueError("Destination message does not match")
                 store.update(

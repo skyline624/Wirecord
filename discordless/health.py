@@ -6,7 +6,7 @@ from discordless.config import ACCOUNT_ID
 
 
 class GatewayHealth:
-    def __init__(self):
+    def __init__(self, account_ids=None):
         self.state = {
             "started_at": time.time(),
             "updated_at": time.time(),
@@ -17,6 +17,7 @@ class GatewayHealth:
             "account": None,
             "ack_at": None,
             "error": None,
+            "allowed_accounts": sorted(account_ids or [ACCOUNT_ID]),
         }
 
     def observe(self, connection, payload):
@@ -39,11 +40,11 @@ class GatewayHealth:
             account = str(payload.get("d", {}).get("user", {}).get("id", ""))
             self.state.update(
                 account=account,
-                ready=account == ACCOUNT_ID,
-                error=None if account == ACCOUNT_ID else "account_mismatch",
+                ready=account in self.state["allowed_accounts"],
+                error=None if account in self.state["allowed_accounts"] else "account_mismatch",
             )
         elif payload.get("t") == "RESUMED":
-            self.state["ready"] = self.state["account"] == ACCOUNT_ID
+            self.state["ready"] = self.state["account"] in self.state["allowed_accounts"]
         self.state["updated_at"] = now
 
     def disconnected(self, connection):
@@ -64,7 +65,7 @@ def healthy(state, now=None):
         return False
     if now - state.get("started_at", 0) < 120:
         return True
-    if not state.get("ready") or state.get("account") != ACCOUNT_ID:
+    if not state.get("ready") or state.get("account") not in state.get("allowed_accounts", [ACCOUNT_ID]):
         return False
     reference = state.get("ack_at") or state.get("connected_at", state["started_at"])
     return now - reference <= 3 * state.get("interval", 45)

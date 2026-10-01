@@ -92,7 +92,9 @@ class Recovery:
                 if bootstrap:
                     for rule in rules:
                         destinations[rule.rule_id] = list(
-                            self.api.history(rule.destination, start)
+                            self.api.history(rule.destination, start, **(
+                                {"account_ids": rule.poster_ids(self.config.user_id)} if rule.native else {}
+                            ))
                         )
                         destination_info = self.api.get(f"/channels/{rule.destination}")
                         if execute:

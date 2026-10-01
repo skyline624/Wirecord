@@ -1,6 +1,6 @@
 # Exploitation Wirecord
 
-Le déploiement utilise `/root/discord/wirecord`, Python 3.13, mitmproxy et le client Discord sous Xvfb. Le code se développe dans `D:\developpement\wirecord`. Le compte est exclusivement Jarl Panda (`462628780574375936`). Les identifiants et URL de webhook restent dans `config.json`, jamais dans Git.
+Le déploiement utilise `/root/discord/wirecord`, Python 3.13, mitmproxy et le client Discord sous Xvfb. Le code se développe dans `D:\developpement\wirecord`. `user_id` définit le compte de lecture par défaut. Chaque règle native peut définir son propre groupe de comptes dans `user_ids` : un compte disponible est tiré au sort pour chaque transfert, avec une session authentifiée distincte par compte. Les identifiants et URL de webhook restent dans `config.json`, jamais dans Git.
 
 ## Configuration et état
 

@@ -20,6 +20,10 @@ def deliver_one(store, rule, row, api):
     try:
         response = api.send(rule, json.loads(row["payload"]))
     except APIError as error:
+        if error.status == 0 or error.status == 429 or error.status >= 500:
+            store.update(row["id"], status="retry", due=time.time() + 30,
+                         error="auth_" + str(error.status))
+            return
         store.update(row["id"], status="blocked", error="auth_" + str(error.status))
         return
     except requests.ConnectTimeout:
@@ -73,8 +77,11 @@ def reconcile_uncertain(store, rules, api):
         try:
             found = [
                 m
-                for m in api.history(rule.destination, snowflake(cutoff))
-                if matches(json.loads(row["payload"]), m, rule.native)
+                for m in api.history(rule.destination, snowflake(cutoff), **(
+                    {"account_ids": rule.poster_ids(api.reader_id)} if rule.native else {}
+                ))
+                if matches(json.loads(row["payload"]), m, rule.native,
+                           account_ids=rule.poster_ids(api.reader_id) if rule.native else None)
             ]
         except APIError:
             continue
@@ -94,7 +101,7 @@ class Runtime:
         self.archive = archive
         self.store = Store(config.state_path)
         self.rules = {r.rule_id: r for r in config.forwards}
-        self.health = GatewayHealth()
+        self.health = GatewayHealth(config.account_ids)
         self.stop = threading.Event()
         self.wakeup = threading.Event()
         self.lock = FileLock(self.store.path + ".runtime.lock")
